@@ -15,6 +15,11 @@
     get_snapshot(conn, group_uuid, date)             -> dict | None
     delete_snapshot(conn, group_uuid, date)
     cleanup_old_snapshots(conn, keep_days=30)
+    # Объявленные недели
+    set_week_announced(conn, group_uuid, week_start, is_full)
+    get_week_announced(conn, group_uuid, week_start) -> dict | None
+    clear_week_announced(conn, group_uuid, week_start=None)
+    cleanup_old_announced_weeks(conn, keep_days=30)
     # Кэш справочников
     save_base_info(conn, data)
     get_base_info(conn)              -> dict | None
@@ -37,8 +42,6 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 # Глобальный лок для сериализации записей.
-# Нужен, потому что ВК-бот (asyncio) и планировщик (поток) могут
-# одновременно писать в БД.
 _write_lock = threading.Lock()
 
 SCHEMA = """
@@ -54,6 +57,14 @@ CREATE TABLE IF NOT EXISTS snapshots (
     lessons    TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (group_uuid, date)
+);
+
+CREATE TABLE IF NOT EXISTS announced_weeks (
+    group_uuid   TEXT NOT NULL,
+    week_start   TEXT NOT NULL,
+    announced_at TEXT NOT NULL,
+    is_full      INTEGER NOT NULL,
+    PRIMARY KEY (group_uuid, week_start)
 );
 
 CREATE TABLE IF NOT EXISTS base_info_cache (
@@ -114,15 +125,7 @@ def _date_key(d: date_type | str) -> str:
 # ---------- Настройки ----------
 
 def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
-    """Сохраняет настройку. Значение всегда сериализуется в JSON.
-
-    Это гарантирует, что при чтении вернётся ровно тот же тип:
-        set_setting(conn, "k", "419")   # строка
-        get_setting(conn, "k")           # '419' (str)
-
-        set_setting(conn, "k", 419)      # число
-        get_setting(conn, "k")           # 419 (int)
-    """
+    """Сохраняет настройку. Значение всегда сериализуется в JSON."""
     payload = json.dumps(value, ensure_ascii=False)
     with _write_lock:
         conn.execute(
@@ -136,10 +139,7 @@ def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
 def get_setting(
     conn: sqlite3.Connection, key: str, default: Any = None,
 ) -> Any:
-    """Возвращает настройку или default.
-
-    Значение всегда хранится как JSON — парсим его.
-    """
+    """Возвращает настройку или default. Значение парсится из JSON."""
     row = conn.execute(
         "SELECT value FROM settings WHERE key = ?", (key,),
     ).fetchone()
@@ -148,8 +148,6 @@ def get_setting(
     try:
         return json.loads(row["value"])
     except (ValueError, TypeError):
-        # На случай, если в БД лежит что-то не-JSON (старые данные,
-        # ручная правка). Не падаем — возвращаем как есть.
         logger.warning("Настройка %s не JSON: %r", key, row["value"])
         return row["value"]
 
@@ -250,6 +248,102 @@ def cleanup_old_snapshots(
     with _write_lock:
         cur = conn.execute(
             "DELETE FROM snapshots WHERE date < ?", (threshold,),
+        )
+        conn.commit()
+    return cur.rowcount
+
+
+# ---------- Объявленные недели ----------
+
+def set_week_announced(
+    conn: sqlite3.Connection,
+    group_uuid: str,
+    week_start: date_type | str,
+    is_full: bool,
+) -> None:
+    """Ставит флаг «неделя объявлена» для группы.
+
+    Args:
+        group_uuid: UUID группы.
+        week_start: понедельник недели (date или 'YYYY-MM-DD').
+        is_full:    True — отправлено полное расписание,
+                    False — неполное (например, в воскресенье в 13:00).
+    """
+    key = _date_key(week_start)
+    with _write_lock:
+        conn.execute(
+            "INSERT INTO announced_weeks "
+            "(group_uuid, week_start, announced_at, is_full) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(group_uuid, week_start) DO UPDATE SET "
+            "  announced_at = excluded.announced_at, "
+            "  is_full = excluded.is_full",
+            (group_uuid, key, _now(), 1 if is_full else 0),
+        )
+        conn.commit()
+
+
+def get_week_announced(
+    conn: sqlite3.Connection, group_uuid: str, week_start: date_type | str,
+) -> Optional[dict]:
+    """Возвращает запись о неделе или None.
+
+    Формат: {"announced_at": str, "is_full": bool}
+    """
+    key = _date_key(week_start)
+    row = conn.execute(
+        "SELECT announced_at, is_full FROM announced_weeks "
+        "WHERE group_uuid = ? AND week_start = ?",
+        (group_uuid, key),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "announced_at": row["announced_at"],
+        "is_full": bool(row["is_full"]),
+    }
+
+
+def clear_week_announced(
+    conn: sqlite3.Connection,
+    group_uuid: str,
+    week_start: Optional[date_type | str] = None,
+) -> int:
+    """Удаляет записи о неделях.
+
+    Если week_start задан — только для этой недели.
+    Если None — все записи для группы.
+
+    Возвращает число удалённых строк.
+    """
+    with _write_lock:
+        if week_start is None:
+            cur = conn.execute(
+                "DELETE FROM announced_weeks WHERE group_uuid = ?",
+                (group_uuid,),
+            )
+        else:
+            key = _date_key(week_start)
+            cur = conn.execute(
+                "DELETE FROM announced_weeks "
+                "WHERE group_uuid = ? AND week_start = ?",
+                (group_uuid, key),
+            )
+        conn.commit()
+    return cur.rowcount
+
+
+def cleanup_old_announced_weeks(
+    conn: sqlite3.Connection, keep_days: int = 30,
+) -> int:
+    """Удаляет записи о неделях, чей week_start старше keep_days.
+
+    Логика: если неделя закончилась больше keep_days назад, она не нужна.
+    """
+    threshold = (datetime.now() - timedelta(days=keep_days)).date().isoformat()
+    with _write_lock:
+        cur = conn.execute(
+            "DELETE FROM announced_weeks WHERE week_start < ?", (threshold,),
         )
         conn.commit()
     return cur.rowcount
