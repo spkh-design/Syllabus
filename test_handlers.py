@@ -15,11 +15,12 @@ import schedule_api
 
 
 class FakeMessage:
-    """Заглушка vkbottle.bot.Message."""
-
-    def __init__(self, peer_id: int = 123, text: str = ""):
+    def __init__(self, peer_id: int = 123, text: str = "",
+                 from_id: int | None = None):
         self.peer_id = peer_id
         self.text = text
+        # Если from_id не задан — считаем, что пишет тот же, кто и peer_id
+        self.from_id = from_id if from_id is not None else peer_id
         self.answers: list[str] = []
 
     async def answer(self, text: str) -> None:
@@ -68,8 +69,8 @@ async def test_start(conn):
 # ---------- /group ----------
 
 @pytest.mark.asyncio
-async def test_group_success(conn, patch_base):
-    m = FakeMessage(peer_id=555)
+async def test_group_success(admin_ids, conn, patch_base):
+    m = FakeMessage(peer_id=555, from_id=123)
     await handlers.cmd_group(m, conn, "СП-4 419")
     assert "Настроено" in m.answers[-1]
     assert db.get_setting(conn, "group_name") == "419"
@@ -79,25 +80,26 @@ async def test_group_success(conn, patch_base):
 
 
 @pytest.mark.asyncio
-async def test_group_wrong_format(conn):
-    m = FakeMessage()
-    await handlers.cmd_group(m, conn, "419")  # без подразделения
+async def test_group_wrong_format(admin_ids, conn):
+    m = FakeMessage(from_id=123)
+    await handlers.cmd_group(m, conn, "419")
     assert "Формат" in m.answers[-1]
 
 
 @pytest.mark.asyncio
-async def test_group_not_found(conn, patch_base):
-    m = FakeMessage()
+async def test_group_not_found(admin_ids, conn, patch_base):
+    m = FakeMessage(from_id=123)
     await handlers.cmd_group(m, conn, "СП-2 999")
     assert "не найдена" in m.answers[-1].lower()
 
 
 @pytest.mark.asyncio
-async def test_group_no_base(conn, monkeypatch):
+async def test_group_no_base(admin_ids, conn, monkeypatch):
     monkeypatch.setattr(handlers, "_load_base", lambda c: None)
-    m = FakeMessage()
+    m = FakeMessage(from_id=123)
     await handlers.cmd_group(m, conn, "СП-4 419")
-    assert "справочники" in m.answers[-1].lower() or "не удалось" in m.answers[-1].lower()
+    assert "справочники" in m.answers[-1].lower() or \
+           "не удалось" in m.answers[-1].lower()
 
 
 # ---------- /where ----------
@@ -125,8 +127,7 @@ async def test_where_configured(conn):
 async def test_today_no_group(conn):
     m = FakeMessage()
     await handlers.cmd_today(m, conn)
-    assert "Настройте группу" in m.answers[-1] or \
-           "настройте группу" in m.answers[-1].lower()
+    assert "не настроена" in m.answers[-1].lower()
 
 
 @pytest.mark.asyncio
@@ -181,11 +182,181 @@ async def test_status_full(conn):
 # ---------- /unsubscribe ----------
 
 @pytest.mark.asyncio
-async def test_unsubscribe(conn):
+async def test_unsubscribe(admin_ids, conn):
     db.set_setting(conn, "group_uuid", "grp-419")
     db.set_setting(conn, "peer_id", "123")
-    m = FakeMessage()
+    m = FakeMessage(from_id=123)
     await handlers.cmd_unsubscribe(m, conn)
     assert db.get_setting(conn, "group_uuid") is None
     assert db.get_setting(conn, "peer_id") is None
     assert "Отписка" in m.answers[-1]
+
+
+# ---------- /week_skip ----------
+
+@pytest.mark.asyncio
+async def test_week_skip_no_group(admin_ids, conn):
+    m = FakeMessage(from_id=123, text="/week_skip")
+    await handlers.cmd_week_skip(m, conn)
+    assert "Настройте группу" in m.answers[-1] or \
+           "настройте группу" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_week_skip_default_next_week(admin_ids, conn):
+    db.set_setting(conn, "group_uuid", "grp-419")
+    m = FakeMessage(from_id=123)
+    await handlers.cmd_week_skip(m, conn)     # args по умолчанию ""
+    assert "помечена" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_week_skip_explicit_date(admin_ids, conn):
+    db.set_setting(conn, "group_uuid", "grp-419")
+    m = FakeMessage(from_id=123)
+    await handlers.cmd_week_skip(m, conn, "21.09.2026")
+    row = db.get_week_announced(conn, "grp-419", date(2026, 9, 21))
+    assert row is not None
+    assert row["is_full"] is False
+
+
+@pytest.mark.asyncio
+async def test_week_skip_wrong_format(admin_ids, conn):
+    db.set_setting(conn, "group_uuid", "grp-419")
+    m = FakeMessage(from_id=123)
+    await handlers.cmd_week_skip(m, conn, "сегодня")
+    assert "Формат" in m.answers[-1] or "❌" in m.answers[-1]
+
+
+@pytest.fixture
+def admin_ids(monkeypatch):
+    """Все тесты считают текущего пользователя админом."""
+    import config
+    monkeypatch.setattr(config, "ADMIN_USER_IDS", [123])
+    # handlers импортирует is_admin_id напрямую, поэтому правим и там
+    import handlers
+    monkeypatch.setattr(handlers, "is_admin_id",
+                        lambda uid: uid == 123)
+
+
+# ---------- is_admin ----------
+
+def test_is_admin_true(admin_ids):
+    m = FakeMessage(from_id=123)
+    assert handlers.is_admin(m) is True
+
+
+def test_is_admin_false(admin_ids):
+    m = FakeMessage(from_id=999)
+    assert handlers.is_admin(m) is False
+
+
+# ---------- _require_admin ----------
+
+@pytest.mark.asyncio
+async def test_require_admin_ok(admin_ids, conn):
+    m = FakeMessage(from_id=123)
+    assert await handlers._require_admin(m) is True
+    assert m.answers == []
+
+
+@pytest.mark.asyncio
+async def test_require_admin_denied(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    assert await handlers._require_admin(m) is False
+    assert "нет прав" in m.answers[-1].lower()
+
+
+# ---------- Админ-команды отказывают не-админам ----------
+
+@pytest.mark.asyncio
+async def test_group_denied_for_non_admin(admin_ids, conn, patch_base):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_group(m, conn, "СП-4 419")
+    assert "нет прав" in m.answers[-1].lower()
+    # настройки не сохранились
+    assert db.get_setting(conn, "group_uuid") is None
+
+
+@pytest.mark.asyncio
+async def test_interval_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_interval(m, conn, "15")
+    assert "нет прав" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_denied_for_non_admin(admin_ids, conn):
+    db.set_setting(conn, "group_uuid", "grp-419")
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_unsubscribe(m, conn)
+    assert "нет прав" in m.answers[-1].lower()
+    # настройки НЕ удалены
+    assert db.get_setting(conn, "group_uuid") == "grp-419"
+
+
+@pytest.mark.asyncio
+async def test_metrics_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_metrics(m, conn)
+    assert "нет прав" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_subscribers_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_subscribers(m, conn)
+    assert "нет прав" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_test_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_test(m, conn)
+    assert "нет прав" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_week_skip_denied_for_non_admin(admin_ids, conn):
+    db.set_setting(conn, "group_uuid", "grp-419")
+    m = FakeMessage(from_id=999, text="/week_skip")
+    await handlers.cmd_week_skip(m, conn)
+    assert "нет прав" in m.answers[-1].lower()
+
+
+# ---------- Публичные команды работают для всех ----------
+
+@pytest.mark.asyncio
+async def test_start_public(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_start(m, conn)
+    assert "Привет" in m.answers[-1]
+
+
+@pytest.mark.asyncio
+async def test_where_public(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_where(m, conn)
+    # Просто не должно быть "нет прав"
+    assert "нет прав" not in m.answers[-1].lower()
+
+
+# ---------- /whoami ----------
+
+@pytest.mark.asyncio
+async def test_whoami_admin(admin_ids, conn):
+    m = FakeMessage(from_id=123, peer_id=-100500)
+    await handlers.cmd_whoami(m, conn)
+    text = m.answers[-1]
+    assert "123" in text
+    assert "-100500" in text
+    assert "✅ да" in text
+
+
+@pytest.mark.asyncio
+async def test_whoami_non_admin(admin_ids, conn):
+    m = FakeMessage(from_id=999, peer_id=-100500)
+    await handlers.cmd_whoami(m, conn)
+    text = m.answers[-1]
+    assert "999" in text
+    assert "❌ нет" in text

@@ -12,6 +12,13 @@ import pytest
 
 import database as db
 import scheduler
+from scheduler import (
+    _current_monday,
+    _is_first_week_of_semester,
+    _is_sunday_after_13,
+    _is_week_complete,
+    _split_dates_by_week,
+)
 import schedule_api
 
 
@@ -193,9 +200,10 @@ def test_check_group_single_change_diff(conn, base_info, monkeypatch):
     )
     result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
     assert result is not None
-    kind, text = result
+    kind, text, changes = result          # <-- было kind, text
     assert kind == "diff"
     assert "Иванов" in text and "Петров" in text
+    assert len(changes) == 1              # <-- новое
 
 
 def test_check_group_massive_change_full(conn, base_info, monkeypatch):
@@ -210,10 +218,11 @@ def test_check_group_massive_change_full(conn, base_info, monkeypatch):
     )
     result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
     assert result is not None
-    kind, text = result
+    kind, text, changes = result          # <-- было kind, text
     assert kind == "full"
     assert "Дистант" in text
     assert "Всего изменений" in text
+    assert len(changes) == 5              # <-- новое
 
 
 def test_check_group_api_error_returns_none(conn, base_info, monkeypatch):
@@ -367,7 +376,7 @@ def test_metrics_notifications_count(conn, base_info, monkeypatch):
         schedule_api, "get_group_lessons",
         lambda b, g, d: [_lesson(1, teacher="Петров")],
     )
-    now = datetime(2026, 9, 8, 10, 0)
+    now = datetime(2026, 9, 8, 9, 0)
     scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
     # 1 уведомление (diff) — 1 сообщение
@@ -385,5 +394,235 @@ def test_check_group_massive_with_territory(conn, base_info, monkeypatch):
     )
     result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
     assert result is not None
-    kind, text = result
+    kind, text, changes = result          # <-- было kind, text
     assert "СП-5" in text
+
+
+def test_run_cycle_after_week_skip_no_announce(conn, base_info, monkeypatch):
+    """После /week_skip автообъявление не срабатывает."""
+    # Заранее ставим флаг
+    db.set_week_announced(conn, "grp-419", date(2026, 9, 14), is_full=False)
+
+    # Эмулируем полную неделю
+    def fake_get(base, g, d):
+        return [_lesson(1)]
+    monkeypatch.setattr(schedule_api, "get_group_lessons", fake_get)
+
+    now = datetime(2026, 9, 13, 15, 0)  # Вс
+    messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
+
+    # Не должно быть объявления недели
+    assert not any("Расписание на неделю" in m for m in messages)
+
+
+# ---------- _current_monday ----------
+
+def test_current_monday_monday():
+    assert _current_monday(date(2026, 9, 14)) == date(2026, 9, 14)
+
+
+def test_current_monday_wednesday():
+    assert _current_monday(date(2026, 9, 16)) == date(2026, 9, 14)
+
+
+def test_current_monday_sunday():
+    assert _current_monday(date(2026, 9, 20)) == date(2026, 9, 14)
+
+
+# ---------- _split_dates_by_week ----------
+
+def test_split_dates_current_only():
+    today = date(2026, 9, 14)  # Пн
+    dates = {date(2026, 9, 14), date(2026, 9, 16)}
+    current, next_ = _split_dates_by_week(dates, today)
+    assert current == dates
+    assert next_ == set()
+
+
+def test_split_dates_next_only():
+    today = date(2026, 9, 14)
+    dates = {date(2026, 9, 21), date(2026, 9, 25)}
+    current, next_ = _split_dates_by_week(dates, today)
+    assert current == set()
+    assert next_ == dates
+
+
+def test_split_dates_mixed():
+    today = date(2026, 9, 14)
+    dates = {date(2026, 9, 14), date(2026, 9, 15),
+             date(2026, 9, 21), date(2026, 9, 22)}
+    current, next_ = _split_dates_by_week(dates, today)
+    assert current == {date(2026, 9, 14), date(2026, 9, 15)}
+    assert next_ == {date(2026, 9, 21), date(2026, 9, 22)}
+
+
+def test_split_dates_ignores_far_dates():
+    """Даты вне двух недель отбрасываются."""
+    today = date(2026, 9, 14)
+    dates = {date(2026, 10, 1)}
+    current, next_ = _split_dates_by_week(dates, today)
+    assert current == set()
+    assert next_ == set()
+
+
+# ---------- _is_week_complete ----------
+
+def test_week_complete_empty():
+    week = {date(2026, 9, 14 + i): [] for i in range(7)}
+    assert _is_week_complete(week) is False
+
+
+def test_week_complete_one_day():
+    week = {date(2026, 9, 14 + i): [] for i in range(7)}
+    week[date(2026, 9, 14)] = [{"number": 1}]
+    assert _is_week_complete(week) is False
+
+
+def test_week_complete_two_days():
+    week = {date(2026, 9, 14 + i): [] for i in range(7)}
+    week[date(2026, 9, 14)] = [{"number": 1}]
+    week[date(2026, 9, 15)] = [{"number": 1}]
+    assert _is_week_complete(week) is False
+
+
+def test_week_complete_three_days():
+    week = {date(2026, 9, 14 + i): [] for i in range(7)}
+    week[date(2026, 9, 14)] = [{"number": 1}]
+    week[date(2026, 9, 15)] = [{"number": 1}]
+    week[date(2026, 9, 16)] = [{"number": 1}]
+    assert _is_week_complete(week) is True
+
+
+def test_week_complete_seven_days():
+    week = {date(2026, 9, 14 + i): [{"number": 1}] for i in range(7)}
+    assert _is_week_complete(week) is True
+
+
+# ---------- _is_sunday_after_13 ----------
+
+def test_sunday_after_13():
+    # Вс 13.09.2026 15:00
+    assert _is_sunday_after_13(datetime(2026, 9, 13, 15, 0)) is True
+
+
+def test_sunday_before_13():
+    assert _is_sunday_after_13(datetime(2026, 9, 13, 10, 0)) is False
+
+
+def test_monday_not_sunday():
+    assert _is_sunday_after_13(datetime(2026, 9, 14, 15, 0)) is False
+
+
+# ---------- _is_first_week_of_semester ----------
+
+def test_first_week_september_start():
+    assert _is_first_week_of_semester(date(2026, 9, 1)) is True
+
+
+def test_first_week_september_end():
+    assert _is_first_week_of_semester(date(2026, 9, 7)) is True
+
+
+def test_second_week_september():
+    assert _is_first_week_of_semester(date(2026, 9, 8)) is False
+
+
+def test_first_week_january():
+    assert _is_first_week_of_semester(date(2026, 1, 8)) is True
+    assert _is_first_week_of_semester(date(2026, 1, 14)) is True
+    assert _is_first_week_of_semester(date(2026, 1, 15)) is False
+
+
+def test_mid_semester():
+    assert _is_first_week_of_semester(date(2026, 11, 15)) is False
+
+
+# ---------- check_group возвращает changes ----------
+
+def test_check_group_returns_changes(conn, base_info, monkeypatch):
+    """check_group возвращает (kind, text, changes)."""
+    old = [_lesson(1, teacher="Иванов")]
+    new = [_lesson(1, teacher="Петров")]
+    db.save_snapshot(conn, "grp-419", date(2026, 9, 8), old)
+
+    monkeypatch.setattr(
+        schedule_api, "get_group_lessons",
+        lambda b, g, d: new,
+    )
+    result = scheduler.check_group(
+        conn, base_info, "grp-419", date(2026, 9, 8),
+    )
+    assert result is not None
+    kind, text, changes = result
+    assert kind == "diff"
+    assert "Иванов" in text and "Петров" in text
+    assert len(changes) == 1
+    assert changes[0].type == "modify"
+
+
+# ---------- run_check_cycle: 3+ дня → вся неделя ----------
+
+def test_run_cycle_three_days_sends_week(conn, base_info, monkeypatch):
+    """Если изменилось 3+ дня — приходит одно большое сообщение."""
+    # Заранее заполним снимки на 3 дня следующей недели
+    days = [date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16)]
+    for d in days:
+        db.save_snapshot(conn, "grp-419", d,
+                         [_lesson(1, teacher="Иванов")])
+
+    def fake_get(base, g, d):
+        if d in days:
+            return [_lesson(1, teacher="Петров")]
+        return []
+
+    monkeypatch.setattr(schedule_api, "get_group_lessons", fake_get)
+
+    # Вс 13.09 15:00 — проверяется следующая неделя
+    now = datetime(2026, 9, 13, 15, 0)
+    messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
+
+    # Объявление недели + 1 большое сообщение
+    joined = "\n".join(messages)
+    assert "⚠️ ИЗМЕНЕНИЯ:" in joined
+    assert "Всего изменений за неделю" in joined
+    # По одному сообщению на день быть не должно
+    assert "Всего: добавлено" not in joined
+
+
+def test_run_cycle_two_days_sends_individual(conn, base_info, monkeypatch):
+    """Если изменилось 2 дня — по одному сообщению на день."""
+    days = [date(2026, 9, 14), date(2026, 9, 15)]
+    for d in days:
+        db.save_snapshot(conn, "grp-419", d,
+                         [_lesson(1, teacher="Иванов")])
+
+    def fake_get(base, g, d):
+        if d in days:
+            return [_lesson(1, teacher="Петров")]
+        return []
+
+    monkeypatch.setattr(schedule_api, "get_group_lessons", fake_get)
+
+    now = datetime(2026, 9, 13, 15, 0)
+    messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
+
+    # Объявление недели + 2 сообщения
+    assert len(messages) >= 2
+    # Каждое сообщение содержит "Всего: добавлено ... изменено"
+    assert any("Всего: добавлено" in m for m in messages)
+
+
+def test_run_cycle_no_change_no_messages(conn, base_info, monkeypatch):
+    """Если изменений нет и неделя объявлена — пусто."""
+    days = [date(2026, 9, 14), date(2026, 9, 15)]
+    for d in days:
+        db.save_snapshot(conn, "grp-419", d, [_lesson(1)])
+    # Ставим флаг «неделя объявлена»
+    db.set_week_announced(conn, "grp-419", date(2026, 9, 14), is_full=True)
+
+    monkeypatch.setattr(
+        schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1)],
+    )
+    now = datetime(2026, 9, 13, 15, 0)
+    messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
+    assert messages == []

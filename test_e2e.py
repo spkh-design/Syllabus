@@ -137,19 +137,21 @@ def test_e2e_no_repeat_on_same_change(conn, base_info, monkeypatch):
     monkeypatch.setattr(
         schedule_api, "get_group_lessons", lambda b, g, d: initial,
     )
+    # Вторник 8 сентября, 8:45 — 1-я пара ещё не началась (или идёт)
     scheduler.run_check_cycle(conn, base_info, "grp-419",
-                              now=datetime(2026, 9, 8, 10, 0))
+                              now=datetime(2026, 9, 8, 8, 45))
 
     # Меняем
     changed = [_lesson(1, teacher="Петров")]
     monkeypatch.setattr(
         schedule_api, "get_group_lessons", lambda b, g, d: changed,
     )
+    # Тот же день, 9:00 — 1-я пара идёт (08:30–09:50)
     msgs1 = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                       now=datetime(2026, 9, 8, 10, 30))
+                                       now=datetime(2026, 9, 8, 9, 0))
     assert len(msgs1) == 1
 
-    # Ещё раз то же самое — не повторяем
+    # Ещё раз то же самое, 9:10 — не повторяем
     msgs2 = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                       now=datetime(2026, 9, 8, 11, 0))
+                                       now=datetime(2026, 9, 8, 9, 10))
     assert msgs2 == []

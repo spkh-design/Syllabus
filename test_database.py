@@ -12,6 +12,10 @@ import pytest
 from database import (
     base_info_age_hours,
     cleanup_old_snapshots,
+    clear_week_announced,
+    cleanup_old_announced_weeks,
+    get_week_announced,
+    set_week_announced,
     delete_setting,
     delete_snapshot,
     get_all_settings,
@@ -283,3 +287,112 @@ def test_setting_handles_non_json_garbage(conn):
     # не должно упасть
     value = get_setting(conn, "broken", "default")
     assert value == "not a json {{{" or value == "default"
+
+
+# ---------- announced_weeks ----------
+
+def test_set_and_get_week_announced(conn):
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
+    row = get_week_announced(conn, "grp-1", date(2026, 9, 14))
+    assert row is not None
+    assert row["is_full"] is True
+    assert row["announced_at"]
+
+
+def test_get_week_announced_missing(conn):
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 14)) is None
+
+
+def test_set_week_announced_overwrites(conn):
+    """Повторный вызов обновляет запись."""
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=False)
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
+    row = get_week_announced(conn, "grp-1", date(2026, 9, 14))
+    assert row["is_full"] is True
+
+
+def test_week_announced_different_groups(conn):
+    """Записи для разных групп независимы."""
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
+    set_week_announced(conn, "grp-2", date(2026, 9, 14), is_full=False)
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 14))["is_full"] is True
+    assert get_week_announced(conn, "grp-2", date(2026, 9, 14))["is_full"] is False
+
+
+def test_week_announced_different_weeks(conn):
+    """Записи для разных недель независимы."""
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
+    set_week_announced(conn, "grp-1", date(2026, 9, 21), is_full=True)
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 14)) is not None
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 21)) is not None
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 28)) is None
+
+
+def test_week_announced_accepts_string(conn):
+    set_week_announced(conn, "grp-1", "2026-09-14", is_full=True)
+    assert get_week_announced(conn, "grp-1", "2026-09-14") is not None
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 14)) is not None
+
+
+def test_clear_week_announced_specific(conn):
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
+    set_week_announced(conn, "grp-1", date(2026, 9, 21), is_full=True)
+    deleted = clear_week_announced(conn, "grp-1", date(2026, 9, 14))
+    assert deleted == 1
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 14)) is None
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 21)) is not None
+
+
+def test_clear_week_announced_all_for_group(conn):
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
+    set_week_announced(conn, "grp-1", date(2026, 9, 21), is_full=True)
+    set_week_announced(conn, "grp-2", date(2026, 9, 14), is_full=True)
+
+    deleted = clear_week_announced(conn, "grp-1")
+    assert deleted == 2
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 14)) is None
+    assert get_week_announced(conn, "grp-1", date(2026, 9, 21)) is None
+    # grp-2 не тронули
+    assert get_week_announced(conn, "grp-2", date(2026, 9, 14)) is not None
+
+
+def test_cleanup_old_announced_weeks(conn):
+    today = date(2026, 9, 14)
+    # Свежая неделя
+    set_week_announced(conn, "grp-1", today, is_full=True)
+    # Старая — 100 дней назад
+    set_week_announced(conn, "grp-1",
+                       today - timedelta(days=100), is_full=True)
+    # Ещё одна свежая
+    set_week_announced(conn, "grp-1",
+                       today - timedelta(days=5), is_full=True)
+
+    deleted = cleanup_old_announced_weeks(conn, keep_days=30)
+    assert deleted == 1
+    assert get_week_announced(conn, "grp-1", today) is not None
+    assert get_week_announced(conn, "grp-1",
+                              today - timedelta(days=100)) is None
+    assert get_week_announced(conn, "grp-1",
+                              today - timedelta(days=5)) is not None
+
+
+def test_week_announced_full_flag_persists(conn):
+    """is_full сохраняется и читается как bool."""
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=False)
+    row = get_week_announced(conn, "grp-1", date(2026, 9, 14))
+    assert isinstance(row["is_full"], bool)
+    assert row["is_full"] is False
+
+
+def test_announced_weeks_persist_after_reconnect(conn, tmp_path):
+    """Данные переживают переподключение к БД."""
+    set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
+    conn.close()
+
+    # Переоткрываем ту же БД
+    from database import init_db
+    conn2 = init_db(tmp_path / "test.db")
+    row = get_week_announced(conn2, "grp-1", date(2026, 9, 14))
+    assert row is not None
+    assert row["is_full"] is True
+    conn2.close()

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import pytest
+from datetime import date
 
 from comparator import (
     Change,
+    count_changed_days,
     diff_lessons,
     describe_change,
     is_massive_change,
@@ -342,3 +344,93 @@ def test_min_changes_disabled():
     """Явное отключение min_changes возвращает старое поведение."""
     changes = [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})]
     assert is_massive_change(changes, total_lessons=1, min_changes=1) is True
+
+
+def test_diff_sr_to_distance_not_a_change():
+    """Переход СР → Дистант НЕ считается изменением."""
+    old = [L(1, auditoria="СР")]
+    new = [L(1, auditoria="Дистант")]
+    assert diff_lessons(old, new) == []
+
+
+def test_diff_distance_to_sr_not_a_change():
+    """Переход Дистант → СР тоже НЕ считается изменением."""
+    old = [L(1, auditoria="Дистант")]
+    new = [L(1, auditoria="СР")]
+    assert diff_lessons(old, new) == []
+
+
+def test_diff_sr1_to_sr2_not_a_change():
+    """СР-1 → СР-2 — не изменение."""
+    old = [L(1, auditoria="СР-1")]
+    new = [L(1, auditoria="СР-2")]
+    assert diff_lessons(old, new) == []
+
+
+def test_diff_cabinet_to_sr_is_a_change():
+    """Кабинет → СР — ЭТО изменение."""
+    old = [L(1, auditoria="43")]
+    new = [L(1, auditoria="СР")]
+    changes = diff_lessons(old, new)
+    assert len(changes) == 1
+    assert changes[0].fields == {"auditoria": ("43", "СР")}
+
+
+def test_diff_distance_typo_with_trailing_space():
+    """Реальная опечатка из API — «Дистантанционное обучение » с пробелом."""
+    old = [L(1, auditoria="Дистант")]
+    new = [L(1, auditoria="Дистантанционное обучение ")]
+    assert diff_lessons(old, new) == []
+
+
+def test_diff_distance_uppercase():
+    """Регистр не важен: «ДИСТАНТ» эквивалентно «Дистант»."""
+    old = [L(1, auditoria="ДИСТАНТ")]
+    new = [L(1, auditoria="СР")]
+    assert diff_lessons(old, new) == []
+
+
+def test_diff_sr_to_cabinet_is_a_change():
+    """СР → кабинет 43 — изменение (вернулись в класс)."""
+    old = [L(1, auditoria="СР")]
+    new = [L(1, auditoria="43")]
+    changes = diff_lessons(old, new)
+    assert len(changes) == 1
+    assert changes[0].fields == {"auditoria": ("СР", "43")}
+
+
+# ---------- count_changed_days ----------
+
+def test_count_changed_days_empty():
+    assert count_changed_days({}) == 0
+
+
+def test_count_changed_days_no_changes():
+    d1, d2 = date(2026, 9, 14), date(2026, 9, 15)
+    assert count_changed_days({d1: [], d2: []}) == 0
+
+
+def test_count_changed_days_one_day():
+    d1, d2 = date(2026, 9, 14), date(2026, 9, 15)
+    changes = {d1: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})], d2: []}
+    assert count_changed_days(changes) == 1
+
+
+def test_count_changed_days_three_days():
+    days = [date(2026, 9, 14 + i) for i in range(3)]
+    changes = {d: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})]
+               for d in days}
+    assert count_changed_days(changes) == 3
+
+
+def test_count_changed_days_ignores_empty_entries():
+    """Дата с пустым списком не считается изменившейся."""
+    days = [date(2026, 9, 14 + i) for i in range(5)]
+    changes = {
+        days[0]: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})],
+        days[1]: [],
+        days[2]: [Change("modify", 2, 0, L(2), {"teacher": ("C", "D")})],
+        days[3]: [],
+        days[4]: [Change("modify", 3, 0, L(3), {"teacher": ("E", "F")})],
+    }
+    assert count_changed_days(changes) == 3

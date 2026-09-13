@@ -8,10 +8,12 @@ import pytest
 
 from comparator import Change
 from formatter import (
+    CHANGE_MARKER,
     VK_MESSAGE_LIMIT,
     format_changes,
     format_day_changes_full,
     format_day_schedule,
+    format_week_changes_full,
     format_week_schedule,
     split_message,
 )
@@ -255,3 +257,131 @@ def test_day_schedule_omits_home_territory():
     text = format_day_schedule(d, lessons, home_territory="(СП-4) Энергетическое отделение")
     assert "СП-4" not in text
     assert "каб. 43" in text
+
+
+# ---------- format_week_changes_full ----------
+
+def test_week_changes_full_empty_week():
+    """Пустая неделя — только заголовок и итог."""
+    start = date(2026, 9, 14)
+    week = {start + timedelta(days=i): [] for i in range(7)}
+    text = format_week_changes_full(start, {}, week)
+    assert "⚠️ ИЗМЕНЕНИЯ: 14.09–20.09" in text
+    assert "Всего изменений за неделю: 0" in text
+
+
+def test_week_changes_full_header_range():
+    """Заголовок — dd.mm–dd.mm от понедельника до воскресенья."""
+    start = date(2026, 9, 14)
+    week = {start + timedelta(days=i): [] for i in range(7)}
+    text = format_week_changes_full(start, {}, week)
+    assert text.startswith("⚠️ ИЗМЕНЕНИЯ: 14.09–20.09")
+
+
+def test_week_changes_full_marks_changed_lessons():
+    """Изменившиеся пары помечаются 🔔, остальные — нет."""
+    start = date(2026, 9, 14)  # Пн
+    week = {
+        start: [L(1, teacher="Иванов"), L(2, teacher="Петров")],
+        start + timedelta(days=1): [L(1, teacher="Сидоров")],
+        start + timedelta(days=2): [],
+        start + timedelta(days=3): [],
+        start + timedelta(days=4): [],
+        start + timedelta(days=5): [],
+        start + timedelta(days=6): [],
+    }
+    changes = {
+        start: [Change("modify", 1, 0, L(1, teacher="Смирнов"),
+                       {"teacher": ("Иванов", "Смирнов")})],
+    }
+    text = format_week_changes_full(start, changes, week)
+
+    # Маркер должен быть только у пары 1 понедельника
+    assert text.count(CHANGE_MARKER) == 2  # 1 — у пары, 1 — у заголовка дня
+    # Проверим, что пары правильно помечены
+    assert "🔔 1." in text
+    assert "🔔 2." not in text
+
+
+def test_week_changes_full_day_header_marker():
+    """День с изменениями — маркер в заголовке дня."""
+    start = date(2026, 9, 14)
+    week = {start + timedelta(days=i): [L(1)] for i in range(7)}
+    changes = {
+        start: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})],
+    }
+    text = format_week_changes_full(start, changes, week)
+    assert "— 14.09 (Пн) 🔔 —" in text
+    assert "— 15.09 (Вт) —" in text
+
+
+def test_week_changes_full_shows_all_days():
+    """Все 7 дней, включая пустые, отображаются."""
+    start = date(2026, 9, 14)
+    week = {
+        start: [L(1)],
+        start + timedelta(days=1): [],
+        start + timedelta(days=2): [L(1)],
+        start + timedelta(days=3): [],
+        start + timedelta(days=4): [L(1)],
+        start + timedelta(days=5): [],
+        start + timedelta(days=6): [],
+    }
+    text = format_week_changes_full(start, {}, week)
+    for d in ("14.09", "15.09", "16.09", "17.09", "18.09", "19.09", "20.09"):
+        assert d in text
+
+
+def test_week_changes_full_summary():
+    """Сводка считает все изменения по дням."""
+    start = date(2026, 9, 14)
+    week = {start + timedelta(days=i): [L(1)] for i in range(3)}
+    for i in range(3, 7):
+        week[start + timedelta(days=i)] = []
+
+    changes = {
+        start: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})],
+        start + timedelta(days=1): [
+            Change("add", 2, 0, L(2)),
+            Change("remove", 3, 0, L(3)),
+        ],
+        start + timedelta(days=2): [Change("modify", 1, 0, L(1), {"auditoria": ("1", "2")})],
+    }
+    text = format_week_changes_full(start, changes, week)
+    assert "Всего изменений за неделю: 4" in text
+    assert "+1 / -1 / ~2" in text
+
+
+def test_week_changes_full_uses_home_territory():
+    """Корпус отображается, если отличается от домашнего."""
+    start = date(2026, 9, 14)
+    week = {
+        start: [L(1, auditoria="12", territory="(СП-5) МФЦПК")],
+        start + timedelta(days=1): [],
+        start + timedelta(days=2): [],
+        start + timedelta(days=3): [],
+        start + timedelta(days=4): [],
+        start + timedelta(days=5): [],
+        start + timedelta(days=6): [],
+    }
+    text = format_week_changes_full(
+        start, {}, week,
+        home_territory="(СП-4) Энергетическое отделение",
+    )
+    assert "СП-5" in text
+
+
+# ---------- format_day_changes_full с маркером ----------
+
+def test_day_changes_full_marks_changed_lessons():
+    """В format_day_changes_full изменившиеся пары помечены 🔔."""
+    d = date(2026, 9, 15)
+    lessons = [L(1, teacher="A"), L(2, teacher="B"), L(3, teacher="C")]
+    changes = [
+        Change("modify", 1, 0, L(1, teacher="A-new"), {"teacher": ("A", "A-new")}),
+        Change("modify", 3, 0, L(3, teacher="C-new"), {"teacher": ("C", "C-new")}),
+    ]
+    text = format_day_changes_full(d, changes, lessons)
+    assert "🔔 1." in text
+    assert "🔔 2." not in text
+    assert "🔔 3." in text
