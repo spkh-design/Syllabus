@@ -9,12 +9,14 @@
     is_massive_change(changes, total)     -> bool
     describe_change(change)               -> str
     summarize_changes(changes)            -> dict
+    count_changed_days(changes_by_day)    -> int
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date as date_type
 from typing import Literal, Optional
 
 # Поля пары, которые мы отслеживаем
@@ -28,6 +30,20 @@ MASSIVE_STREAK = 3
 
 # Минимальное число изменений, при котором срабатывает правило доли
 MASSIVE_MIN_CHANGES = 3
+
+# Минимальное число изменившихся ДНЕЙ, при котором шлём всю неделю
+MASSIVE_DAYS_FOR_WEEK = 3
+
+# Значения аудитории, которые считаются «самостоятельной работой».
+# Если старое и новое значения ОБА входят в это множество,
+# изменение auditoria НЕ считается изменением.
+
+# Включает реальные значения из API СПК
+SELF_STUDY_AUDITORIA = {
+    "ср", "ср-1", "ср-2", "ср-3", "ср-4",
+    "дистант", "дист.об.", "дистанционное занятие",
+    "дистантанционное обучение",
+}
 
 ChangeType = Literal["add", "remove", "modify"]
 
@@ -53,6 +69,30 @@ class Change:
 def _key(lesson: dict) -> tuple[int, int]:
     """Ключ пары: (номер, подгруппа)."""
     return lesson["number"], lesson["subgroup"]
+
+
+def _normalize_auditoria(value: str) -> str:
+    """Нормализует значение аудитории для сравнения.
+
+    Убирает пробелы по краям, приводит к нижнему регистру.
+    """
+    return (value or "").strip().lower()
+
+
+def _is_self_study(value: str) -> bool:
+    """True, если значение аудитории — «самостоятельная работа»."""
+    return _normalize_auditoria(value) in SELF_STUDY_AUDITORIA
+
+
+def _auditoria_equivalent(old_v: str, new_v: str) -> bool:
+    """True, если оба значения — «самостоятельная работа».
+
+    Такие переходы считаются НЕ изменением:
+        «СР» → «Дистант»
+        «Дистант» → «Дист.об.»
+        «СР-1» → «СР-2»
+    """
+    return _is_self_study(old_v) and _is_self_study(new_v)
 
 
 def diff_lessons(old: list[dict], new: list[dict]) -> list[Change]:
@@ -86,8 +126,17 @@ def diff_lessons(old: list[dict], new: list[dict]) -> list[Change]:
         elif o is not None and n is not None:
             fields = {}
             for f in TRACKED_FIELDS:
-                if o.get(f) != n.get(f):
-                    fields[f] = (o.get(f, "—"), n.get(f, "—"))
+                old_v = o.get(f, "—")
+                new_v = n.get(f, "—")
+                if old_v == new_v:
+                    continue
+
+                # Особый случай: переход между «самостоятельными»
+                # аудиториями НЕ считаем изменением.
+                if f == "auditoria" and _auditoria_equivalent(old_v, new_v):
+                    continue
+
+                fields[f] = (old_v, new_v)
             if fields:
                 changes.append(Change(
                     type="modify", number=number, subgroup=subgroup,
@@ -120,7 +169,6 @@ def is_massive_change(
         return False
 
     # Правило 1: доля изменившихся пар > порога И их минимум min_changes
-    # (total_lessons может быть 0 — тогда правило не применяется)
     if total_lessons > 0 and len(changes) >= min_changes:
         if len(changes) / total_lessons > ratio:
             return True
@@ -150,9 +198,7 @@ def _change_signature(change: Change) -> Optional[tuple]:
     """Подпись изменения для поиска «серий».
 
     Для modify — (тип='modify', поле, было, стало).
-    Для add/remove — (тип, disciplina, teacher, auditoria, lesson_type) —
-        если у серии добавлений/удалений одинаковые значения, считаем
-        это массовым (например, отменили 5 пар подряд).
+    Для add/remove — (тип, disciplina, teacher, auditoria, lesson_type).
 
     Возвращает None, если подпись не имеет смысла.
     """
@@ -227,3 +273,19 @@ def summarize_changes(changes: list[Change]) -> dict:
         for f in c.fields:
             summary["fields"][f] = summary["fields"].get(f, 0) + 1
     return summary
+
+
+def count_changed_days(
+    changes_by_day: dict[date_type, list[Change]],
+) -> int:
+    """Считает, в скольких днях есть хотя бы одно изменение.
+
+    Args:
+        changes_by_day: {дата: [Change, ...]} — по дню на каждую проверенную дату.
+                        Дни без изменений могут быть пустыми списками
+                        или отсутствовать.
+
+    Returns:
+        Число дней, где len(changes) > 0.
+    """
+    return sum(1 for changes in changes_by_day.values() if changes)
