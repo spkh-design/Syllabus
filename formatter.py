@@ -8,6 +8,8 @@
     format_week_schedule(start_date, week)              -> str
     format_changes(day, changes, new_lessons)           -> str
     format_day_changes_full(day, changes, new_lessons)  -> str
+    format_week_changes_full(start_date, changes_by_day, week, home_territory)
+                                                        -> str
     split_message(text, limit)                          -> list[str]
 """
 
@@ -25,6 +27,9 @@ VK_MESSAGE_LIMIT = 4000
 # Названия дней недели
 WEEKDAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
+# Маркер изменившейся пары в большом недельном сообщении
+CHANGE_MARKER = "🔔"
+
 
 def _weekday_short(d: date_type) -> str:
     return WEEKDAYS_RU[d.weekday()]
@@ -41,16 +46,21 @@ def _short_territory(full_name: str) -> str:
 
 def _format_lesson_line(
     lesson: dict, weekday: int, home_territory: str = "",
+    *, changed: bool = False,
 ) -> str:
     """Одна пара в 4 строках.
 
     Если territory пары не совпадает с home_territory (или home пустой,
-    а territory непустой) — добавляем «[СП-5]» после кабинета.
+    а territory непустой) — добавляем «СП-5» перед кабинетом.
+
+    Args:
+        changed: если True — перед номером пары ставится маркер 🔔.
     """
     number = lesson["number"]
     subgroup = lesson["subgroup"]
     time = get_lesson_time(weekday, number) or f"пара {number}"
     sub = f" (подгр. {subgroup})" if subgroup else ""
+    mark = f"{CHANGE_MARKER} " if changed else ""
 
     # Формируем описание локации
     auditoria = lesson.get("auditoria", "—")
@@ -58,7 +68,6 @@ def _format_lesson_line(
 
     location = f"каб. {auditoria}"
     if territory and territory != home_territory:
-        # Вытащим «СП-N» из названия типа «(СП-5) МФЦПК»
         short_territory = _short_territory(territory)
         if short_territory:
             location = f"{short_territory}, каб. {auditoria}"
@@ -66,7 +75,7 @@ def _format_lesson_line(
             location = f"{territory}, каб. {auditoria}"
 
     lines = [
-        f"{number}. {time}{sub}",
+        f"{mark}{number}. {time}{sub}",
         f"   {lesson.get('discipline', '—')}",
         f"   {lesson.get('lesson_type', '—')} | {location} | "
         f"{lesson.get('teacher', '—')}",
@@ -84,7 +93,21 @@ def _format_day_header(d: date_type, *, prefix: str = "") -> str:
     return head
 
 
-def format_day_schedule(day: date_type, lessons: list[dict], home_territory: str = "",) -> str:
+def _format_week_header(
+    start_date: date_type, *, prefix: str = "",
+) -> str:
+    """Шапка недели: 'dd.mm–dd.mm' + опциональный префикс."""
+    end_date = start_date + timedelta(days=6)
+    range_str = (f"{start_date.strftime('%d.%m')}–"
+                 f"{end_date.strftime('%d.%m')}")
+    if prefix:
+        return f"{prefix} {range_str}"
+    return range_str
+
+
+def format_day_schedule(
+    day: date_type, lessons: list[dict], home_territory: str = "",
+) -> str:
     """Расписание одного дня. Без пары — 'Пар нет'."""
     head = _format_day_header(day)
     if not lessons:
@@ -97,7 +120,8 @@ def format_day_schedule(day: date_type, lessons: list[dict], home_territory: str
 
 
 def format_week_schedule(
-    start_date: date_type, week: dict[date_type, list[dict]], home_territory: str = "",
+    start_date: date_type, week: dict[date_type, list[dict]],
+    home_territory: str = "",
 ) -> str:
     """Расписание на неделю. Все 7 дней, включая пустые."""
     head = (f"📅 Расписание на неделю "
@@ -125,10 +149,9 @@ def format_week_schedule(
 def format_changes(
     day: date_type, changes: list[Change], new_lessons: list[dict],
 ) -> str:
-    """Короткое сообщение об изменениях (diff).
+    """Короткое сообщение об изменениях (diff) по одному дню.
 
-    Если изменений нет — вернёт пустую строку (вызывающий код
-    решает, что делать).
+    Если изменений нет — вернёт пустую строку.
     """
     if not changes:
         return ""
@@ -138,7 +161,7 @@ def format_changes(
 
     for c in changes:
         lines.append(describe_change(c))
-        lines.append("")  # пустая строка между изменениями
+        lines.append("")
 
     summary = summarize_changes(changes)
     tail = (f"Всего: добавлено {summary['add']}, "
@@ -150,21 +173,28 @@ def format_changes(
 
 
 def format_day_changes_full(
-    day: date_type, changes: list[Change], new_lessons: list[dict], home_territory: str = "",
+    day: date_type, changes: list[Change], new_lessons: list[dict],
+    home_territory: str = "",
 ) -> str:
     """Полное расписание дня с пометкой об изменениях.
 
-    Используется при массовых изменениях: например, на весь день
-    поставили дистант — нет смысла перечислять 8 пар по одной,
-    лучше показать расписание целиком.
+    Используется при массовых изменениях в одном дне.
+    Все пары помечаются 🔔, потому что все они входят в список изменений.
     """
     head = _format_day_header(day, prefix="⚠️ ИЗМЕНЕНИЯ:")
     if not new_lessons:
         return f"{head}\n🎉 Пар нет (все отменены)"
 
+    # Собираем ключи изменившихся пар, чтобы пометить их
+    changed_keys = {(c.number, c.subgroup) for c in changes}
+
     blocks = [head, ""]
     for lesson in new_lessons:
-        blocks.append(_format_lesson_line(lesson, day.weekday(), home_territory))
+        key = (lesson["number"], lesson["subgroup"])
+        blocks.append(_format_lesson_line(
+            lesson, day.weekday(), home_territory,
+            changed=(key in changed_keys),
+        ))
 
     summary = summarize_changes(changes)
     blocks.append("")
@@ -176,16 +206,78 @@ def format_day_changes_full(
     return "\n\n".join(blocks)
 
 
-def split_message(text: str, limit: int = VK_MESSAGE_LIMIT) -> list[str]:
-    """Режет длинный текст на части, не разрывая строки.
+def format_week_changes_full(
+    start_date: date_type,
+    changes_by_day: dict[date_type, list[Change]],
+    week: dict[date_type, list[dict]],
+    home_territory: str = "",
+) -> str:
+    """Полное расписание недели с пометками изменившихся пар.
+
+    Используется, когда изменилось 3+ дня за неделю: показываем всю
+    неделю целиком, у изменившихся пар — маркер 🔔.
 
     Args:
-        text:  исходный текст.
-        limit: максимальная длина одной части.
+        start_date:     понедельник недели.
+        changes_by_day: {дата: [Change, ...]} — только для изменившихся дней.
+                        Дни без изменений могут отсутствовать или быть [].
+        week:           {дата: [пара, ...]} — все 7 дней.
+        home_territory: название подразделения группы.
 
     Returns:
-        Список частей. Если текст короче limit — список из одного элемента.
+        Готовый текст.
     """
+    head = _format_week_header(start_date, prefix="⚠️ ИЗМЕНЕНИЯ:")
+    blocks = [head, ""]
+
+    total_changes = 0
+    total_add = total_remove = total_modify = 0
+
+    for offset in range(7):
+        d = start_date + timedelta(days=offset)
+        wd = _weekday_short(d)
+        lessons = week.get(d, [])
+        day_changes = changes_by_day.get(d, [])
+        day_changed = bool(day_changes)
+
+        # Собираем ключи изменившихся пар этого дня
+        changed_keys = {(c.number, c.subgroup) for c in day_changes}
+
+        # Заголовок дня с маркером, если в этот день что-то изменилось
+        day_mark = f" {CHANGE_MARKER}" if day_changed else ""
+        blocks.append(f"— {d.strftime('%d.%m')} ({wd}){day_mark} —")
+
+        if not lessons:
+            blocks.append("   пар нет")
+            blocks.append("")
+            continue
+
+        for lesson in lessons:
+            key = (lesson["number"], lesson["subgroup"])
+            blocks.append(_format_lesson_line(
+                lesson, d.weekday(), home_territory,
+                changed=(key in changed_keys),
+            ))
+        blocks.append("")
+
+        # Считаем статистику
+        if day_changes:
+            s = summarize_changes(day_changes)
+            total_changes += len(day_changes)
+            total_add += s["add"]
+            total_remove += s["remove"]
+            total_modify += s["modify"]
+
+    blocks.append(
+        f"Всего изменений за неделю: {total_changes} "
+        f"(+{total_add} / -{total_remove} / ~{total_modify})"
+    )
+
+    return "\n".join(blocks).rstrip()
+
+
+def split_message(text: str, limit: int = VK_MESSAGE_LIMIT) -> list[str]:
+    """Режет длинный текст на части, не разрывая строки."""
     if len(text) <= limit:
         return [text]
 
@@ -194,7 +286,6 @@ def split_message(text: str, limit: int = VK_MESSAGE_LIMIT) -> list[str]:
     current_len = 0
 
     for line in text.split("\n"):
-        # +1 на символ перевода строки
         line_len = len(line) + 1
         if current_len + line_len > limit and current:
             parts.append("\n".join(current))
