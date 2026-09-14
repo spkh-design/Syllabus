@@ -26,6 +26,7 @@ from handlers import (
     cmd_group,
     cmd_interval,
     cmd_metrics,
+    cmd_nextweek,
     cmd_start,
     cmd_status,
     cmd_subscribers,
@@ -87,6 +88,11 @@ async def on_week(message: Message):
     await cmd_week(message, conn)
 
 
+@bot.on.message(text="/nextweek")
+async def on_nextweek(message: Message):
+    await cmd_nextweek(message, conn)
+
+
 @bot.on.message(text="/status")
 async def on_status(message: Message):
     await cmd_status(message, conn)
@@ -134,6 +140,13 @@ async def on_week_skip_arg(message: Message, args: str):
 
 @bot.on.message()
 async def on_unknown(message: Message):
+    """Реагирует только на команды (текст, начинающийся с /).
+
+    На всё остальное — молчит.
+    """
+    text = (message.text or "").strip()
+    if not text.startswith("/"):
+        return
     await message.answer(
         "🤔 Не понимаю команду.\n"
         "Напишите /help, чтобы увидеть список."

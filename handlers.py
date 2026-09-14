@@ -98,6 +98,11 @@ async def _reply(message: Message, text: str) -> None:
         await message.answer(part)
 
 
+def _current_monday(d: date) -> date:
+    """Понедельник недели, в которую входит d."""
+    return d - timedelta(days=d.weekday())
+
+
 # ---------- Публичные команды ----------
 
 async def cmd_start(message: Message, conn) -> None:
@@ -107,13 +112,14 @@ async def cmd_start(message: Message, conn) -> None:
         "  /where — какая группа сейчас отслеживается\n"
         "  /today — расписание на сегодня\n"
         "  /tomorrow — расписание на завтра\n"
-        "  /week — расписание на следующую неделю\n"
-        "  /status — что настроено\n\n"
+        "  /week — расписание на текущую неделю\n"
+        "  /nextweek — расписание на следующую неделю\n\n"
         "Админ-команды (только для администраторов):\n"
         "  /group СП-4 419 — задать группу и подразделение\n"
         "  /interval 30 — интервал проверки\n"
         "  /test — тестовое уведомление\n"
         "  /metrics — счётчики\n"
+        "  /status — что настроено\n"
         "  /subscribers — подписчики\n"
         "  /week_skip — пометить неделю как объявленную\n"
         "  /unsubscribe — отписаться\n\n"
@@ -170,6 +176,7 @@ async def _send_day(message: Message, conn, target: date) -> None:
 
 
 async def cmd_week(message: Message, conn) -> None:
+    """Расписание на ТЕКУЩУЮ неделю (понедельник — воскресенье)."""
     group_uuid = db.get_setting(conn, "group_uuid")
     if not group_uuid:
         await message.answer("⚠️ Группа ещё не настроена.")
@@ -180,19 +187,37 @@ async def cmd_week(message: Message, conn) -> None:
         await message.answer("⚠️ Не удалось получить справочники.")
         return
 
-    today = date.today()
-    days_ahead = (0 - today.weekday()) % 7
-    if days_ahead == 0:
-        days_ahead = 7
-    next_monday = today + timedelta(days=days_ahead)
-
-    week = schedule_api.get_week_lessons(base, group_uuid, next_monday)
+    monday = _current_monday(date.today())
+    week = schedule_api.get_week_lessons(base, group_uuid, monday)
     home = schedule_api.home_territory(base, group_uuid)
-    text = format_week_schedule(next_monday, week, home)
+    text = format_week_schedule(monday, week, home)
+    await _reply(message, text)
+
+
+async def cmd_nextweek(message: Message, conn) -> None:
+    """Расписание на СЛЕДУЮЩУЮ неделю."""
+    group_uuid = db.get_setting(conn, "group_uuid")
+    if not group_uuid:
+        await message.answer("⚠️ Группа ещё не настроена.")
+        return
+
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники.")
+        return
+
+    monday = _current_monday(date.today()) + timedelta(days=7)
+    week = schedule_api.get_week_lessons(base, group_uuid, monday)
+    home = schedule_api.home_territory(base, group_uuid)
+    text = format_week_schedule(monday, week, home)
     await _reply(message, text)
 
 
 async def cmd_status(message: Message, conn) -> None:
+    """Статус бота. Только для админов."""
+    if not await _require_admin(message):
+        return
+    
     group_name = db.get_setting(conn, "group_name")
     division = db.get_setting(conn, "division")
     peer_id = db.get_setting(conn, "peer_id")
