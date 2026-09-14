@@ -62,8 +62,12 @@ async def test_start(conn):
     m = FakeMessage()
     await handlers.cmd_start(m, conn)
     assert len(m.answers) == 1
-    assert "Привет" in m.answers[0]
-    assert "/group" in m.answers[0]
+    text = m.answers[0]
+    assert "Привет" in text
+    assert "/week" in text
+    assert "/nextweek" in text
+    assert "/status" in text
+    assert "Админ-команды" in text
 
 
 # ---------- /group ----------
@@ -155,11 +159,69 @@ async def test_today_api_error(conn, patch_base, monkeypatch):
     assert "не удалось" in m.answers[-1].lower()
 
 
+# ---------- /week и /nextweek ----------
+
+@pytest.mark.asyncio
+async def test_week_current(conn, patch_base, monkeypatch):
+    """`/week` показывает ТЕКУЩУЮ неделю (понедельник — воскресенье)."""
+    db.set_setting(conn, "group_uuid", "grp-419")
+
+    captured = {}
+
+    def fake_get_week(base, g, d):
+        captured["monday"] = d
+        return {d + timedelta(days=i): [] for i in range(7)}
+
+    monkeypatch.setattr(schedule_api, "get_week_lessons", fake_get_week)
+
+    m = FakeMessage()
+    await handlers.cmd_week(m, conn)
+
+    today = date.today()
+    expected_monday = today - timedelta(days=today.weekday())
+    assert captured["monday"] == expected_monday
+
+
+@pytest.mark.asyncio
+async def test_nextweek(conn, patch_base, monkeypatch):
+    """`/nextweek` показывает СЛЕДУЮЩУЮ неделю."""
+    db.set_setting(conn, "group_uuid", "grp-419")
+
+    captured = {}
+
+    def fake_get_week(base, g, d):
+        captured["monday"] = d
+        return {d + timedelta(days=i): [] for i in range(7)}
+
+    monkeypatch.setattr(schedule_api, "get_week_lessons", fake_get_week)
+
+    m = FakeMessage()
+    await handlers.cmd_nextweek(m, conn)
+
+    today = date.today()
+    expected_monday = today - timedelta(days=today.weekday()) + timedelta(days=7)
+    assert captured["monday"] == expected_monday
+
+
+@pytest.mark.asyncio
+async def test_week_no_group(conn):
+    m = FakeMessage()
+    await handlers.cmd_week(m, conn)
+    assert "не настроена" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_nextweek_no_group(conn):
+    m = FakeMessage()
+    await handlers.cmd_nextweek(m, conn)
+    assert "не настроена" in m.answers[-1].lower()
+
+
 # ---------- /status ----------
 
 @pytest.mark.asyncio
-async def test_status_empty(conn):
-    m = FakeMessage()
+async def test_status_empty(admin_ids, conn):
+    m = FakeMessage(from_id=123)
     await handlers.cmd_status(m, conn)
     text = m.answers[-1]
     assert "не настроена" in text
@@ -167,16 +229,23 @@ async def test_status_empty(conn):
 
 
 @pytest.mark.asyncio
-async def test_status_full(conn):
+async def test_status_full(admin_ids, conn):
     db.set_setting(conn, "group_name", "419")
     db.set_setting(conn, "division", "СП-4")
     db.set_setting(conn, "peer_id", "123")
     db.save_base_info(conn, {"x": 1})
-    m = FakeMessage()
+    m = FakeMessage(from_id=123)
     await handlers.cmd_status(m, conn)
     text = m.answers[-1]
     assert "419" in text
     assert "СП-4" in text
+
+
+@pytest.mark.asyncio
+async def test_status_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(from_id=999)
+    await handlers.cmd_status(m, conn)
+    assert "нет прав" in m.answers[-1].lower()
 
 
 # ---------- /unsubscribe ----------
