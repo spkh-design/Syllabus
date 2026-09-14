@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import time
 import re
-from datetime import date as date_type, datetime, timedelta
+from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -115,11 +115,16 @@ def fetch_base_info() -> dict:
 
 
 def fetch_schedule(target_date: date_type) -> dict:
-    """Загружает сырое расписание на дату."""
-    ts_ms = int(
-        datetime(target_date.year, target_date.month, target_date.day)
-        .timestamp() * 1000
+    """Загружает сырое расписание на дату.
+
+    Timestamp формируется в полдень UTC — так дата не «съезжает»
+    ни в одном часовом поясе.
+    """
+    dt = datetime(
+        target_date.year, target_date.month, target_date.day,
+        12, 0, tzinfo=timezone.utc,
     )
+    ts_ms = int(dt.timestamp() * 1000)
     payload = _request(SCHEDULE_ENDPOINT, params={"date": ts_ms})
     if not payload.get("success"):
         raise ScheduleAPIError(f"schedule: success=false на {target_date}")
@@ -219,7 +224,7 @@ def get_group_lessons(
     # API иногда возвращает весь период. Ищем нужный день по timestamp.
     day = None
     for d in days:
-        d_date = datetime.fromtimestamp(d["date"] / 1000).date()
+        d_date = datetime.fromtimestamp(d["date"] / 1000, tz=timezone.utc,).date()
         if d_date == target_date:
             day = d
             break
