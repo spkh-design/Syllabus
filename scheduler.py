@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from datetime import date as date_type, datetime, time, timedelta
 from typing import Optional
-
+from dataclasses import dataclass, field
 import database as db
 import schedule_api
 from comparator import Change, count_changed_days, diff_lessons, is_massive_change
@@ -47,6 +47,37 @@ SEMESTER_FIRST_WEEK_DAYS = 7
 
 # Порог «3+ дня → вся неделя»
 MASSIVE_DAYS_FOR_WEEK = 3
+
+
+@dataclass
+class ScheduleMessage:
+    """Готовое к отправке сообщение с расписанием.
+
+    Attributes:
+        kind:           'day_image' | 'week_image' | 'text'
+        text:           короткая подпись (уходит в message вместе с вложением)
+        fallback_text:  текст на случай, если картинка/upload не удались
+        target_date:    для day_image — день
+        week_start:     для week_image — понедельник недели
+        changes:        список Change (для day_image)
+        changes_by_day: {дата: [Change]} (для week_image)
+        lessons:        пары на день (для day_image)
+        week:           {дата: [пары]} (для week_image)
+        home_territory: название подразделения группы
+        png_bytes:      если картинка уже отрендерена
+    """
+
+    kind: str
+    text: str = ""
+    fallback_text: str = ""
+    target_date: Optional[date_type] = None
+    week_start: Optional[date_type] = None
+    changes: list[Change] = field(default_factory=list)
+    changes_by_day: dict[date_type, list[Change]] = field(default_factory=dict)
+    lessons: Optional[list[dict]] = None
+    week: Optional[dict[date_type, list[dict]]] = None
+    home_territory: str = ""
+    png_bytes: Optional[bytes] = None
 
 
 # ---------- Логика времени ----------
@@ -203,21 +234,8 @@ def _increment_metric(conn, key: str, value=None) -> None:
 
 
 def check_group(
-    conn,
-    base: dict,
-    group_uuid: str,
-    target_date: date_type,
-    *,
-    now: Optional[datetime] = None,
-    skip_if_passed_today: bool = True,
-) -> Optional[tuple[str, str, list[Change]]]:
-    """Проверяет одну дату для группы.
-
-    Returns:
-        (kind, text, changes) или None, если уведомлений нет.
-        kind: 'diff' | 'full'
-        changes: список Change — для последующей группировки.
-    """
+    conn, base, group_uuid, target_date, *, now=None, skip_if_passed_today=True
+) -> Optional[ScheduleMessage]:
     try:
         new_lessons = schedule_api.get_group_lessons(base, group_uuid, target_date)
     except schedule_api.ScheduleAPIError as e:
@@ -226,47 +244,55 @@ def check_group(
         return None
 
     old_snapshot = db.get_snapshot(conn, group_uuid, target_date)
-
     if old_snapshot is None:
         if new_lessons:
             db.save_snapshot(conn, group_uuid, target_date, new_lessons)
-            logger.info("Первичный снимок %s на %s сохранён", group_uuid, target_date)
         return None
 
     old_lessons = old_snapshot["lessons"]
-
     if old_snapshot["hash"] == _hash(new_lessons):
         return None
 
     changes = diff_lessons(old_lessons, new_lessons)
-
     if not changes:
         db.save_snapshot(conn, group_uuid, target_date, new_lessons)
         return None
 
-    # Сохраняем снимок до отправки — не будем повторять уведомление,
-    # если отправка упадёт.
     db.save_snapshot(conn, group_uuid, target_date, new_lessons)
 
-    # Не отправлять изменения на сегодня, если все пары уже прошли
     if skip_if_passed_today and now is not None and target_date == now.date():
         last_number = max((l["number"] for l in new_lessons), default=0)
         if _day_lessons_passed(target_date, last_number, now):
-            logger.info("Изменения на %s, но все пары уже прошли — " "уведомление не отправляется", target_date)
             db.log_notification(conn, group_uuid, target_date, "skipped_passed", "")
             return None
 
     total = max(len(old_lessons), len(new_lessons), 1)
     home = schedule_api.home_territory(base, group_uuid)
-    if is_massive_change(changes, total):
-        text = format_day_changes_full(target_date, changes, new_lessons, home)
-        kind = "full"
-    else:
-        text = format_changes(target_date, changes, new_lessons)
-        kind = "diff"
 
-    db.log_notification(conn, group_uuid, target_date, kind, text[:500])
-    return kind, text, changes
+    # kind = full → day_image (полное расписание дня с маркерами)
+    # kind = diff → тоже day_image, но маркеров меньше
+    # В обоих случаях шлём картинку дня.
+    fallback_text = (
+        format_day_changes_full(target_date, changes, new_lessons, home)
+        if is_massive_change(changes, total)
+        else format_changes(target_date, changes, new_lessons)
+    )
+    # Заголовок «⚠️ Изменения на 21.09 (Пн)» — подпись под картинку
+    weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][target_date.weekday()]
+    text = f"⚠️ Изменения на {target_date.strftime('%d.%m')} ({weekday})"
+
+    kind = "full" if is_massive_change(changes, total) else "diff"
+    db.log_notification(conn, group_uuid, target_date, kind, fallback_text[:500])
+
+    return ScheduleMessage(
+        kind="day_image",
+        text=text,
+        fallback_text=fallback_text,
+        target_date=target_date,
+        changes=changes,
+        lessons=new_lessons,
+        home_territory=home,
+    )
 
 
 def _hash(lessons: list[dict]) -> str:
@@ -280,59 +306,54 @@ def _hash(lessons: list[dict]) -> str:
 # ---------- Объявление недели ----------
 
 
-def _maybe_announce_week(
-    conn, base: dict, group_uuid: str, week_start: date_type, week: dict[date_type, list[dict]], now: datetime
-) -> Optional[str]:
-    """Проверяет, надо ли объявить неделю. Если да — возвращает текст.
-
-    Логика:
-      - флаг уже стоит → None
-      - первая неделя семестра → None (работаем по дням)
-      - неделя полная → текст полного расписания, флаг is_full=True
-      - неделя неполная И воскресенье >= 13:00 → текст неполного, is_full=False
-      - иначе → None (ждём)
-    """
+def _maybe_announce_week(conn, base, group_uuid, week_start, week, now):
     existing = db.get_week_announced(conn, group_uuid, week_start)
     if existing is not None:
         return None
 
     if _is_first_week_of_semester(now.date()):
-        logger.debug("Первая неделя семестра — пропускаем автообъявление")
         return None
 
     complete = _is_week_complete(week)
     is_sunday = _is_sunday_after_13(now)
 
     if not complete and not is_sunday:
-        logger.debug("Неделя %s неполная, но ещё не воскресенье 13:00 — ждём", week_start)
         return None
 
     home = schedule_api.home_territory(base, group_uuid)
-    text = format_week_schedule(week_start, week, home)
+    fallback = format_week_schedule(week_start, week, home)
+    text = (
+        f"📅 Расписание на неделю "
+        f"с {week_start.strftime('%d.%m.%Y')} "
+        f"по {(week_start + timedelta(days=5)).strftime('%d.%m.%Y')}"
+    )
 
     db.set_week_announced(conn, group_uuid, week_start, is_full=complete)
     kind = "week_full" if complete else "week_partial"
-    db.log_notification(conn, group_uuid, week_start, kind, text[:500])
+    db.log_notification(conn, group_uuid, week_start, kind, fallback[:500])
 
-    logger.info("Объявлена неделя %s (%s)", week_start, "полная" if complete else "неполная")
-    return text
+    return ScheduleMessage(
+        kind="week_image", text=text, fallback_text=fallback, week_start=week_start, week=week, home_territory=home
+    )
 
 
 # ---------- Полный цикл ----------
 
 
-def run_check_cycle(conn, base: Optional[dict], group_uuid: str, now: Optional[datetime] = None) -> list[str]:
-    """Полный цикл: определить, что проверять, проверить, вернуть тексты.
+def run_check_cycle(
+    conn, base: Optional[dict], group_uuid: str, now: Optional[datetime] = None
+) -> list[ScheduleMessage]:
+    """Полный цикл: определить, что проверять, проверить, вернуть ScheduleMessage.
 
     Алгоритм:
       1. should_check_now → set[date].
       2. Разделяем на текущую и следующую недели.
       3. Для следующей недели: загружаем расписание, проверяем
-         объявление. Если объявили — добавляем текст в messages.
-      4. Для каждой даты: check_group. Собираем changes_by_day.
+         объявление. Если объявили — добавляем ScheduleMessage.
+      4. Для каждой даты: check_group. Собираем changes_by_day и day_messages.
       5. Для каждой недели: если count_changed_days >= 3 →
-         одно большое format_week_changes_full. Иначе — по одному
-         diff/full на изменившийся день.
+         одно ScheduleMessage(kind='week_image'). Иначе — по одному
+         ScheduleMessage(kind='day_image') на изменившийся день.
     """
     if now is None:
         now = datetime.now()
@@ -353,7 +374,7 @@ def run_check_cycle(conn, base: Optional[dict], group_uuid: str, now: Optional[d
     today = now.date()
     current_dates, next_dates = _split_dates_by_week(dates, today)
 
-    messages: list[str] = []
+    messages: list[ScheduleMessage] = []
     week_cache: dict[date_type, dict[date_type, list[dict]]] = {}
 
     # --- 1. Следующая неделя: объявление ---
@@ -362,29 +383,24 @@ def run_check_cycle(conn, base: Optional[dict], group_uuid: str, now: Optional[d
         week = schedule_api.get_week_lessons(base, group_uuid, week_start)
         week_cache[week_start] = week
 
-        announce_text = _maybe_announce_week(conn, base, group_uuid, week_start, week, now)
-        if announce_text:
-            messages.extend(split_message(announce_text))
+        announce_msg = _maybe_announce_week(conn, base, group_uuid, week_start, week, now)
+        if announce_msg is not None:
+            messages.append(announce_msg)
 
     # --- 2. Проверяем каждую дату, собираем изменения ---
     changes_by_day: dict[date_type, list[Change]] = {}
-    # Параллельно сохраняем тексты per-day на случай, если группа
-    # по дням (изменений < 3 в неделе).
-    day_messages: dict[date_type, str] = {}
+    day_messages: dict[date_type, ScheduleMessage] = {}
 
     for d in sorted(current_dates | next_dates):
         result = check_group(conn, base, group_uuid, d, now=now, skip_if_passed_today=True)
         if result is None:
             continue
-        kind, text, changes = result
-        logger.info("Изменения на %s (%s, %d изменений)", d, kind, len(changes))
-        changes_by_day[d] = changes
-        day_messages[d] = text
+        logger.info("Изменения на %s (%s, %d изменений)", d, result.kind, len(result.changes))
+        changes_by_day[d] = result.changes
+        day_messages[d] = result
 
     # --- 3. Группируем по неделям и решаем, что отправлять ---
-    # Текущая неделя
     _process_week_messages(messages, changes_by_day, day_messages, current_dates, base, group_uuid)
-    # Следующая неделя
     _process_week_messages(
         messages,
         changes_by_day,
@@ -405,9 +421,9 @@ def run_check_cycle(conn, base: Optional[dict], group_uuid: str, now: Optional[d
 
 
 def _process_week_messages(
-    messages: list[str],
+    messages: list[ScheduleMessage],
     changes_by_day: dict[date_type, list[Change]],
-    day_messages: dict[date_type, str],
+    day_messages: dict[date_type, ScheduleMessage],
     week_dates: set[date_type],
     base: dict,
     group_uuid: str,
@@ -415,33 +431,43 @@ def _process_week_messages(
     week_start: Optional[date_type] = None,
     week_cache: Optional[dict[date_type, dict[date_type, list[dict]]]] = None,
 ) -> None:
-    """Решает, как отправить изменения за неделю.
+    """Формирует ScheduleMessage для недели.
 
-    Если >= MASSIVE_DAYS_FOR_WEEK дней недели изменились — шлём одно
-    большое format_week_changes_full. Иначе — по одному сообщению на
-    изменившийся день.
+    Если >= MASSIVE_DAYS_FOR_WEEK дней недели изменились — одно
+    ScheduleMessage(kind='week_image'). Иначе — по одному
+    ScheduleMessage(kind='day_image') на изменившийся день.
     """
-    # Оставляем только даты этой недели
-    relevant_changes = {d: changes for d, changes in changes_by_day.items() if d in week_dates}
-
+    relevant_changes = {d: c for d, c in changes_by_day.items() if d in week_dates}
     if not relevant_changes:
         return
 
     if count_changed_days(relevant_changes) >= MASSIVE_DAYS_FOR_WEEK:
-        # Нужна вся неделя — берём её из кэша или загружаем
+        # Одна недельная картинка
         start = week_start or min(week_dates)
         week = (week_cache or {}).get(start)
         if week is None:
             week = schedule_api.get_week_lessons(base, group_uuid, start)
 
         home = schedule_api.home_territory(base, group_uuid)
-        text = format_week_changes_full(start, relevant_changes, week, home)
-        logger.info("Массовые изменения (%d дней) — шлём всю неделю с %s", count_changed_days(relevant_changes), start)
-        messages.extend(split_message(text))
+        fallback = format_week_changes_full(start, relevant_changes, week, home)
+        text = (
+            f"⚠️ Изменения за неделю " f"{start.strftime('%d.%m')}–" f"{(start + timedelta(days=5)).strftime('%d.%m')}"
+        )
+        messages.append(
+            ScheduleMessage(
+                kind="week_image",
+                text=text,
+                fallback_text=fallback,
+                week_start=start,
+                changes_by_day=relevant_changes,
+                week=week,
+                home_territory=home,
+            )
+        )
         return
 
-    # Иначе — по одному сообщению на изменившийся день
+    # По одному дню — берём уже готовые ScheduleMessage из day_messages
     for d in sorted(relevant_changes):
-        text = day_messages.get(d)
-        if text:
-            messages.extend(split_message(text))
+        msg = day_messages.get(d)
+        if msg is not None:
+            messages.append(msg)
