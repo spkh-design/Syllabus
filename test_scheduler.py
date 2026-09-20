@@ -21,8 +21,8 @@ from scheduler import (
 )
 import schedule_api
 
-
 # ---------- Фикстуры ----------
+
 
 @pytest.fixture
 def conn(tmp_path):
@@ -34,12 +34,8 @@ def conn(tmp_path):
 @pytest.fixture
 def base_info():
     return {
-        "divisions": [
-            {"name": "(СП-4) Энергетическое отделени", "id": "div-sp4"},
-        ],
-        "groups": [
-            {"name": "419", "id": "grp-419", "division": "div-sp4", "curse": 3},
-        ],
+        "divisions": [{"name": "(СП-4) Энергетическое отделени", "id": "div-sp4"}],
+        "groups": [{"name": "419", "id": "grp-419", "division": "div-sp4", "curse": 3}],
         "teachers": [{"name": "Дубров Никита Александрович", "id": "t-dubrov"}],
         "disciplines": [{"name": "Web", "id": "d-web"}],
         "lesson_Types": [{"name": "Лекция", "id": "lt-lec"}],
@@ -48,15 +44,28 @@ def base_info():
     }
 
 
-def _lesson(number=1, subgroup=0, discipline="Web", teacher="Дубров Никита Александрович",
-            auditoria="43", lesson_type="Лекция", territory="",):
+def _lesson(
+    number=1,
+    subgroup=0,
+    discipline="Web",
+    teacher="Дубров Никита Александрович",
+    auditoria="43",
+    lesson_type="Лекция",
+    territory="",
+):
     return {
-        "number": number, "subgroup": subgroup, "discipline": discipline,
-        "teacher": teacher, "auditoria": auditoria, "lesson_type": lesson_type, "territory": territory,
+        "number": number,
+        "subgroup": subgroup,
+        "discipline": discipline,
+        "teacher": teacher,
+        "auditoria": auditoria,
+        "lesson_type": lesson_type,
+        "territory": territory,
     }
 
 
 # ---------- should_check_now: Пн–Пт ----------
+
 
 def test_check_today_weekday_morning():
     """Пн 07:00 — только сегодня."""
@@ -90,6 +99,7 @@ def test_check_weekday_before_window():
 
 # ---------- should_check_now: Пт ----------
 
+
 def test_check_friday_afternoon_includes_next_week():
     """Пт 15:00 — сегодня, завтра и вся следующая неделя."""
     now = datetime(2026, 9, 11, 15, 0)  # Пт
@@ -114,6 +124,7 @@ def test_check_friday_morning_no_next_week():
 
 # ---------- should_check_now: Сб ----------
 
+
 def test_check_saturday_morning_next_week_only():
     """Сб 09:00 — вся следующая неделя."""
     now = datetime(2026, 9, 12, 9, 0)
@@ -133,6 +144,7 @@ def test_check_saturday_before_window():
 
 
 # ---------- should_check_now: Вс ----------
+
 
 def test_check_sunday_morning_next_week():
     """Вс 09:00 — вся следующая неделя."""
@@ -161,12 +173,10 @@ def test_check_sunday_late_evening_still_week():
 
 # ---------- check_group ----------
 
+
 def test_check_group_first_run_saves_no_message(conn, base_info, monkeypatch):
     """Первый запуск — снимка нет, уведомление не отправляется."""
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: [_lesson(1)],
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1)])
 
     result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
     assert result is None
@@ -180,10 +190,7 @@ def test_check_group_no_changes(conn, base_info, monkeypatch):
     lessons = [_lesson(1)]
     db.save_snapshot(conn, "grp-419", date(2026, 9, 8), lessons)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: lessons,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: lessons)
     result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
     assert result is None
 
@@ -194,16 +201,12 @@ def test_check_group_single_change_diff(conn, base_info, monkeypatch):
     new = [_lesson(1, teacher="Петров")]
     db.save_snapshot(conn, "grp-419", date(2026, 9, 8), old)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: new,
-    )
-    result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
-    assert result is not None
-    kind, text, changes = result          # <-- было kind, text
-    assert kind == "diff"
-    assert "Иванов" in text and "Петров" in text
-    assert len(changes) == 1              # <-- новое
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: new)
+    msg = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
+    assert msg is not None
+    assert msg.kind == "day_image"
+    assert "Иванов" in msg.fallback_text and "Петров" in msg.fallback_text
+    assert len(msg.changes) == 1
 
 
 def test_check_group_massive_change_full(conn, base_info, monkeypatch):
@@ -212,21 +215,18 @@ def test_check_group_massive_change_full(conn, base_info, monkeypatch):
     new = [_lesson(i, auditoria="Дистант") for i in range(1, 6)]
     db.save_snapshot(conn, "grp-419", date(2026, 9, 8), old)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: new,
-    )
-    result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
-    assert result is not None
-    kind, text, changes = result          # <-- было kind, text
-    assert kind == "full"
-    assert "Дистант" in text
-    assert "Всего изменений" in text
-    assert len(changes) == 5              # <-- новое
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: new)
+    msg = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
+    assert msg is not None
+    assert msg.kind == "day_image"
+    assert "Дистант" in msg.fallback_text
+    assert "Всего изменений" in msg.fallback_text
+    assert len(msg.changes) == 5
 
 
 def test_check_group_api_error_returns_none(conn, base_info, monkeypatch):
     """API упал — не падаем, возвращаем None."""
+
     def boom(*a, **kw):
         raise schedule_api.ScheduleAPIError("network down")
 
@@ -241,10 +241,7 @@ def test_check_group_logs_notification(conn, base_info, monkeypatch):
     new = [_lesson(1, teacher="Петров")]
     db.save_snapshot(conn, "grp-419", date(2026, 9, 8), old)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: new,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: new)
     scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
     last = db.last_notification(conn, "grp-419", date(2026, 9, 8))
     assert last is not None
@@ -257,10 +254,7 @@ def test_check_group_updates_snapshot_before_sending(conn, base_info, monkeypatc
     new = [_lesson(1, teacher="Петров")]
     db.save_snapshot(conn, "grp-419", date(2026, 9, 8), old)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: new,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: new)
     scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
 
     snap = db.get_snapshot(conn, "grp-419", date(2026, 9, 8))
@@ -269,13 +263,11 @@ def test_check_group_updates_snapshot_before_sending(conn, base_info, monkeypatc
 
 # ---------- run_check_cycle ----------
 
+
 def test_run_cycle_no_dates(conn, base_info, monkeypatch):
     """Пт 23:30 — ничего не проверяем."""
     now = datetime(2026, 9, 11, 23, 30)
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: [],
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [])
     msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
     assert msgs == []
 
@@ -298,17 +290,17 @@ def test_run_cycle_with_changes(conn, base_info, monkeypatch):
     now = datetime(2026, 9, 13, 15, 0)  # Вс
     msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
     assert len(msgs) >= 1
-    assert any("Петров" in m for m in msgs)
+    assert any("Петров" in m.fallback_text for m in msgs)
 
 
 def test_run_cycle_no_base_returns_empty(conn, monkeypatch):
     """Нет справочников — цикл пропускается."""
-    msgs = scheduler.run_check_cycle(conn, None, "grp-419",
-                                     now=datetime(2026, 9, 8, 10, 0))
+    msgs = scheduler.run_check_cycle(conn, None, "grp-419", now=datetime(2026, 9, 8, 10, 0))
     assert msgs == []
 
 
 # ---------- refresh_base_info_if_needed ----------
+
 
 def test_refresh_base_info_loads_when_empty(conn, monkeypatch):
     fresh = {"divisions": [], "groups": []}
@@ -321,8 +313,7 @@ def test_refresh_base_info_skips_when_fresh(conn, monkeypatch):
     """Если справочники моложе 24 ч — API не дёргается."""
     db.save_base_info(conn, {"v": 1})
     called = []
-    monkeypatch.setattr(schedule_api, "fetch_base_info",
-                        lambda: called.append(1) or {"v": 2})
+    monkeypatch.setattr(schedule_api, "fetch_base_info", lambda: called.append(1) or {"v": 2})
     result = scheduler.refresh_base_info_if_needed(conn, {"v": 1})
     assert called == []
     assert result == {"v": 1}
@@ -331,6 +322,7 @@ def test_refresh_base_info_skips_when_fresh(conn, monkeypatch):
 def test_refresh_base_info_handles_api_error(conn, monkeypatch):
     def boom():
         raise schedule_api.ScheduleAPIError("nope")
+
     monkeypatch.setattr(schedule_api, "fetch_base_info", boom)
     db.save_base_info(conn, {"v": 1})
     # Справочники есть в БД, но «старые» (age=None/большой)
@@ -340,10 +332,7 @@ def test_refresh_base_info_handles_api_error(conn, monkeypatch):
 
 def test_metrics_increment_on_cycle(conn, base_info, monkeypatch):
     """После цикла метрики обновляются."""
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: [],
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [])
 
     now = datetime(2026, 9, 8, 10, 0)  # Вт
     scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
@@ -354,8 +343,10 @@ def test_metrics_increment_on_cycle(conn, base_info, monkeypatch):
 
 def test_metrics_increment_on_api_error(conn, base_info, monkeypatch):
     """При ошибке API счётчик ошибок растёт."""
+
     def boom(*a, **kw):
         raise schedule_api.ScheduleAPIError("down")
+
     monkeypatch.setattr(schedule_api, "get_group_lessons", boom)
 
     # Заполним снимок, чтобы не сработал «первый запуск»
@@ -369,13 +360,9 @@ def test_metrics_increment_on_api_error(conn, base_info, monkeypatch):
 
 def test_metrics_notifications_count(conn, base_info, monkeypatch):
     """Счётчик уведомлений растёт при изменении."""
-    db.save_snapshot(conn, "grp-419", date(2026, 9, 8),
-                     [_lesson(1, teacher="Иванов")])
+    db.save_snapshot(conn, "grp-419", date(2026, 9, 8), [_lesson(1, teacher="Иванов")])
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: [_lesson(1, teacher="Петров")],
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1, teacher="Петров")])
     now = datetime(2026, 9, 8, 9, 0)
     scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
@@ -389,13 +376,10 @@ def test_check_group_massive_with_territory(conn, base_info, monkeypatch):
     new = [_lesson(1, auditoria="12", territory="(СП-5) МФЦПК")]
     db.save_snapshot(conn, "grp-419", date(2026, 9, 8), old)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons", lambda b, g, d: new,
-    )
-    result = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
-    assert result is not None
-    kind, text, changes = result          # <-- было kind, text
-    assert "СП-5" in text
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: new)
+    msg = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
+    assert msg is not None
+    assert "СП-5" in msg.fallback_text
 
 
 def test_run_cycle_after_week_skip_no_announce(conn, base_info, monkeypatch):
@@ -406,16 +390,18 @@ def test_run_cycle_after_week_skip_no_announce(conn, base_info, monkeypatch):
     # Эмулируем полную неделю
     def fake_get(base, g, d):
         return [_lesson(1)]
+
     monkeypatch.setattr(schedule_api, "get_group_lessons", fake_get)
 
     now = datetime(2026, 9, 13, 15, 0)  # Вс
     messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
     # Не должно быть объявления недели
-    assert not any("Расписание на неделю" in m for m in messages)
+    assert not any("Расписание на неделю" in (m.text + m.fallback_text) for m in messages)
 
 
 # ---------- _current_monday ----------
+
 
 def test_current_monday_monday():
     assert _current_monday(date(2026, 9, 14)) == date(2026, 9, 14)
@@ -430,6 +416,7 @@ def test_current_monday_sunday():
 
 
 # ---------- _split_dates_by_week ----------
+
 
 def test_split_dates_current_only():
     today = date(2026, 9, 14)  # Пн
@@ -449,8 +436,7 @@ def test_split_dates_next_only():
 
 def test_split_dates_mixed():
     today = date(2026, 9, 14)
-    dates = {date(2026, 9, 14), date(2026, 9, 15),
-             date(2026, 9, 21), date(2026, 9, 22)}
+    dates = {date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 21), date(2026, 9, 22)}
     current, next_ = _split_dates_by_week(dates, today)
     assert current == {date(2026, 9, 14), date(2026, 9, 15)}
     assert next_ == {date(2026, 9, 21), date(2026, 9, 22)}
@@ -466,6 +452,7 @@ def test_split_dates_ignores_far_dates():
 
 
 # ---------- _is_week_complete ----------
+
 
 def test_week_complete_empty():
     week = {date(2026, 9, 14 + i): [] for i in range(7)}
@@ -500,6 +487,7 @@ def test_week_complete_seven_days():
 
 # ---------- _is_sunday_after_13 ----------
 
+
 def test_sunday_after_13():
     # Вс 13.09.2026 15:00
     assert _is_sunday_after_13(datetime(2026, 9, 13, 15, 0)) is True
@@ -514,6 +502,7 @@ def test_monday_not_sunday():
 
 
 # ---------- _is_first_week_of_semester ----------
+
 
 def test_first_week_september_start():
     assert _is_first_week_of_semester(date(2026, 9, 1)) is True
@@ -539,36 +528,31 @@ def test_mid_semester():
 
 # ---------- check_group возвращает changes ----------
 
+
 def test_check_group_returns_changes(conn, base_info, monkeypatch):
     """check_group возвращает (kind, text, changes)."""
     old = [_lesson(1, teacher="Иванов")]
     new = [_lesson(1, teacher="Петров")]
     db.save_snapshot(conn, "grp-419", date(2026, 9, 8), old)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: new,
-    )
-    result = scheduler.check_group(
-        conn, base_info, "grp-419", date(2026, 9, 8),
-    )
-    assert result is not None
-    kind, text, changes = result
-    assert kind == "diff"
-    assert "Иванов" in text and "Петров" in text
-    assert len(changes) == 1
-    assert changes[0].type == "modify"
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: new)
+    msg = scheduler.check_group(conn, base_info, "grp-419", date(2026, 9, 8))
+    assert msg is not None
+    assert msg.kind == "day_image"
+    assert "Иванов" in msg.fallback_text and "Петров" in msg.fallback_text
+    assert len(msg.changes) == 1
+    assert msg.changes[0].type == "modify"
 
 
 # ---------- run_check_cycle: 3+ дня → вся неделя ----------
 
+
 def test_run_cycle_three_days_sends_week(conn, base_info, monkeypatch):
-    """Если изменилось 3+ дня — приходит одно большое сообщение."""
+    """Если изменилось 3+ дня — приходит одно большое сообщение с изменениями."""
     # Заранее заполним снимки на 3 дня следующей недели
     days = [date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16)]
     for d in days:
-        db.save_snapshot(conn, "grp-419", d,
-                         [_lesson(1, teacher="Иванов")])
+        db.save_snapshot(conn, "grp-419", d, [_lesson(1, teacher="Иванов")])
 
     def fake_get(base, g, d):
         if d in days:
@@ -577,24 +561,24 @@ def test_run_cycle_three_days_sends_week(conn, base_info, monkeypatch):
 
     monkeypatch.setattr(schedule_api, "get_group_lessons", fake_get)
 
-    # Вс 13.09 15:00 — проверяется следующая неделя
     now = datetime(2026, 9, 13, 15, 0)
     messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
-    # Объявление недели + 1 большое сообщение
-    joined = "\n".join(messages)
-    assert "⚠️ ИЗМЕНЕНИЯ:" in joined
-    assert "Всего изменений за неделю" in joined
-    # По одному сообщению на день быть не должно
-    assert "Всего: добавлено" not in joined
+    # В этом сценарии ожидаем ДВА week_image:
+    #  1) автообъявление новой недели (нет флага в БД);
+    #  2) большое сообщение с изменениями за неделю (3 дня изменились).
+    # Нас интересует именно второе.
+    week_msgs = [m for m in messages if m.kind == "week_image"]
+    changes_msgs = [m for m in week_msgs if "Всего изменений за неделю" in m.fallback_text]
+    assert len(changes_msgs) == 1
+    assert "⚠️ ИЗМЕНЕНИЯ:" in changes_msgs[0].fallback_text
 
 
 def test_run_cycle_two_days_sends_individual(conn, base_info, monkeypatch):
     """Если изменилось 2 дня — по одному сообщению на день."""
     days = [date(2026, 9, 14), date(2026, 9, 15)]
     for d in days:
-        db.save_snapshot(conn, "grp-419", d,
-                         [_lesson(1, teacher="Иванов")])
+        db.save_snapshot(conn, "grp-419", d, [_lesson(1, teacher="Иванов")])
 
     def fake_get(base, g, d):
         if d in days:
@@ -609,7 +593,7 @@ def test_run_cycle_two_days_sends_individual(conn, base_info, monkeypatch):
     # Объявление недели + 2 сообщения
     assert len(messages) >= 2
     # Каждое сообщение содержит "Всего: добавлено ... изменено"
-    assert any("Всего: добавлено" in m for m in messages)
+    assert any("Всего: добавлено" in m.fallback_text for m in messages)
 
 
 def test_run_cycle_no_change_no_messages(conn, base_info, monkeypatch):
@@ -620,9 +604,7 @@ def test_run_cycle_no_change_no_messages(conn, base_info, monkeypatch):
     # Ставим флаг «неделя объявлена»
     db.set_week_announced(conn, "grp-419", date(2026, 9, 14), is_full=True)
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1)],
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1)])
     now = datetime(2026, 9, 13, 15, 0)
     messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
     assert messages == []
