@@ -16,6 +16,7 @@ from vkbottle.bot import Bot, Message
 
 import database as db
 import scheduler
+from schedule_sender import send_schedule_message
 from config import VK_TOKEN, CHECK_INTERVAL_MINUTES, DB_PATH, ADMIN_PEER_ID
 from handlers import (
     cmd_group,
@@ -183,9 +184,7 @@ async def send_startup_greeting(conn, admin_peer_id: int | None = ADMIN_PEER_ID,
 
 
 async def background_checker():
-    """Раз в CHECK_INTERVAL_MINUTES проверяет расписание."""
     global _base_cache
-
     logger.info(">>> background_checker: стартовал")
 
     while True:
@@ -201,14 +200,16 @@ async def background_checker():
                 else:
                     messages = scheduler.run_check_cycle(conn, _base_cache, str(group_uuid))
                     logger.info(">>> checker: получено %d сообщений", len(messages))
-                    for text in messages:
+                    for msg in messages:
                         try:
-                            await bot.api.messages.send(peer_id=int(peer_id), message=text, random_id=0)
+                            await send_schedule_message(
+                                bot.api, int(peer_id), msg, conn=conn, group_uuid=str(group_uuid)
+                            )
                             await asyncio.sleep(0.5)
                         except Exception as e:
                             logger.error("Ошибка отправки: %s", e)
             else:
-                logger.warning(">>> checker: нет настроек — group_uuid=%r, peer_id=%r", group_uuid, peer_id)
+                logger.warning(">>> checker: нет настроек")
         except Exception as e:
             logger.exception("Ошибка в фоновом цикле: %s", e)
 
@@ -237,6 +238,11 @@ async def main():
     deleted_weeks = db.cleanup_old_announced_weeks(conn, keep_days=30)
     if deleted_weeks:
         logger.info("Очищено старых записей о неделях: %d", deleted_weeks)
+
+    # Чистим старые изображения
+    deleted_imgs = db.cleanup_old_week_images(conn, keep_days=30)
+    if deleted_imgs:
+        logger.info("Очищено старых изображений недель: %d", deleted_imgs)
 
     # Приветствие — до запуска polling, чтобы точно ушло
     await send_startup_greeting(conn)
