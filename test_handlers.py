@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
+from unittest.mock import MagicMock
 
 import database as db
 import handlers
@@ -15,16 +16,17 @@ import schedule_api
 
 
 class FakeMessage:
-    def __init__(self, peer_id: int = 123, text: str = "",
-                 from_id: int | None = None):
+    def __init__(self, peer_id=123, text="", from_id=None):
         self.peer_id = peer_id
         self.text = text
-        # Если from_id не задан — считаем, что пишет тот же, кто и peer_id
         self.from_id = from_id if from_id is not None else peer_id
         self.answers: list[str] = []
+        self.attachments: list[str | None] = []
+        self.ctx_api = MagicMock()
 
-    async def answer(self, text: str) -> None:
+    async def answer(self, text, attachment=None):
         self.answers.append(text)
+        self.attachments.append(attachment)
 
 
 @pytest.fixture
@@ -37,14 +39,13 @@ def conn(tmp_path):
 @pytest.fixture
 def base_info():
     return {
-        "divisions": [
-            {"name": "(СП-4) Энергетическое отделение", "id": "div-sp4"},
-        ],
-        "groups": [
-            {"name": "419", "id": "grp-419", "division": "div-sp4", "curse": 3},
-        ],
-        "teachers": [], "disciplines": [],
-        "lesson_Types": [], "audithories": [], "territories": [],
+        "divisions": [{"name": "(СП-4) Энергетическое отделение", "id": "div-sp4"}],
+        "groups": [{"name": "419", "id": "grp-419", "division": "div-sp4", "curse": 3}],
+        "teachers": [],
+        "disciplines": [],
+        "lesson_Types": [],
+        "audithories": [],
+        "territories": [],
     }
 
 
@@ -56,6 +57,7 @@ def patch_base(monkeypatch, base_info):
 
 
 # ---------- /start ----------
+
 
 @pytest.mark.asyncio
 async def test_start(conn):
@@ -71,6 +73,7 @@ async def test_start(conn):
 
 
 # ---------- /group ----------
+
 
 @pytest.mark.asyncio
 async def test_group_success(admin_ids, conn, patch_base):
@@ -102,11 +105,11 @@ async def test_group_no_base(admin_ids, conn, monkeypatch):
     monkeypatch.setattr(handlers, "_load_base", lambda c: None)
     m = FakeMessage(from_id=123)
     await handlers.cmd_group(m, conn, "СП-4 419")
-    assert "справочники" in m.answers[-1].lower() or \
-           "не удалось" in m.answers[-1].lower()
+    assert "справочники" in m.answers[-1].lower() or "не удалось" in m.answers[-1].lower()
 
 
 # ---------- /where ----------
+
 
 @pytest.mark.asyncio
 async def test_where_not_configured(conn):
@@ -127,6 +130,7 @@ async def test_where_configured(conn):
 
 # ---------- /today, /tomorrow ----------
 
+
 @pytest.mark.asyncio
 async def test_today_no_group(conn):
     m = FakeMessage()
@@ -137,13 +141,22 @@ async def test_today_no_group(conn):
 @pytest.mark.asyncio
 async def test_today_success(conn, patch_base, monkeypatch):
     db.set_setting(conn, "group_uuid", "grp-419")
-    lessons = [{"number": 1, "subgroup": 0, "discipline": "Web",
-                "teacher": "T", "auditoria": "43", "lesson_type": "Лекция"}]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: lessons)
+    lessons = [
+        {"number": 1, "subgroup": 0, "discipline": "Web", "teacher": "T", "auditoria": "43", "lesson_type": "Лекция"}
+    ]
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: lessons)
+
+    calls = []
+
+    async def fake_send(api, peer_id, msg, **kw):
+        calls.append(msg)
+
+    monkeypatch.setattr(handlers, "send_schedule_message", fake_send)
+
     m = FakeMessage()
     await handlers.cmd_today(m, conn)
-    assert "Web" in m.answers[-1]
+    assert len(calls) == 1
+    assert calls[0].kind == "day_image"
 
 
 @pytest.mark.asyncio
@@ -152,6 +165,7 @@ async def test_today_api_error(conn, patch_base, monkeypatch):
 
     def boom(*a, **kw):
         raise schedule_api.ScheduleAPIError("down")
+
     monkeypatch.setattr(schedule_api, "get_group_lessons", boom)
 
     m = FakeMessage()
@@ -160,6 +174,7 @@ async def test_today_api_error(conn, patch_base, monkeypatch):
 
 
 # ---------- /week и /nextweek ----------
+
 
 @pytest.mark.asyncio
 async def test_week_current(conn, patch_base, monkeypatch):
@@ -173,6 +188,11 @@ async def test_week_current(conn, patch_base, monkeypatch):
         return {d + timedelta(days=i): [] for i in range(7)}
 
     monkeypatch.setattr(schedule_api, "get_week_lessons", fake_get_week)
+
+    async def fake_send(api, peer_id, msg, **kw):
+        pass
+
+    monkeypatch.setattr(handlers, "send_schedule_message", fake_send)
 
     m = FakeMessage()
     await handlers.cmd_week(m, conn)
@@ -194,6 +214,11 @@ async def test_nextweek(conn, patch_base, monkeypatch):
         return {d + timedelta(days=i): [] for i in range(7)}
 
     monkeypatch.setattr(schedule_api, "get_week_lessons", fake_get_week)
+
+    async def fake_send(api, peer_id, msg, **kw):
+        pass
+
+    monkeypatch.setattr(handlers, "send_schedule_message", fake_send)
 
     m = FakeMessage()
     await handlers.cmd_nextweek(m, conn)
@@ -218,6 +243,7 @@ async def test_nextweek_no_group(conn):
 
 
 # ---------- /status ----------
+
 
 @pytest.mark.asyncio
 async def test_status_empty(admin_ids, conn):
@@ -250,6 +276,7 @@ async def test_status_denied_for_non_admin(admin_ids, conn):
 
 # ---------- /unsubscribe ----------
 
+
 @pytest.mark.asyncio
 async def test_unsubscribe(admin_ids, conn):
     db.set_setting(conn, "group_uuid", "grp-419")
@@ -263,19 +290,19 @@ async def test_unsubscribe(admin_ids, conn):
 
 # ---------- /week_skip ----------
 
+
 @pytest.mark.asyncio
 async def test_week_skip_no_group(admin_ids, conn):
     m = FakeMessage(from_id=123, text="/week_skip")
     await handlers.cmd_week_skip(m, conn)
-    assert "Настройте группу" in m.answers[-1] or \
-           "настройте группу" in m.answers[-1].lower()
+    assert "Настройте группу" in m.answers[-1] or "настройте группу" in m.answers[-1].lower()
 
 
 @pytest.mark.asyncio
 async def test_week_skip_default_next_week(admin_ids, conn):
     db.set_setting(conn, "group_uuid", "grp-419")
     m = FakeMessage(from_id=123)
-    await handlers.cmd_week_skip(m, conn)     # args по умолчанию ""
+    await handlers.cmd_week_skip(m, conn)  # args по умолчанию ""
     assert "помечена" in m.answers[-1].lower()
 
 
@@ -301,14 +328,16 @@ async def test_week_skip_wrong_format(admin_ids, conn):
 def admin_ids(monkeypatch):
     """Все тесты считают текущего пользователя админом."""
     import config
+
     monkeypatch.setattr(config, "ADMIN_USER_IDS", [123])
     # handlers импортирует is_admin_id напрямую, поэтому правим и там
     import handlers
-    monkeypatch.setattr(handlers, "is_admin_id",
-                        lambda uid: uid == 123)
+
+    monkeypatch.setattr(handlers, "is_admin_id", lambda uid: uid == 123)
 
 
 # ---------- is_admin ----------
+
 
 def test_is_admin_true(admin_ids):
     m = FakeMessage(from_id=123)
@@ -321,6 +350,7 @@ def test_is_admin_false(admin_ids):
 
 
 # ---------- _require_admin ----------
+
 
 @pytest.mark.asyncio
 async def test_require_admin_ok(admin_ids, conn):
@@ -337,6 +367,7 @@ async def test_require_admin_denied(admin_ids, conn):
 
 
 # ---------- Админ-команды отказывают не-админам ----------
+
 
 @pytest.mark.asyncio
 async def test_group_denied_for_non_admin(admin_ids, conn, patch_base):
@@ -395,6 +426,7 @@ async def test_week_skip_denied_for_non_admin(admin_ids, conn):
 
 # ---------- Публичные команды работают для всех ----------
 
+
 @pytest.mark.asyncio
 async def test_start_public(admin_ids, conn):
     m = FakeMessage(from_id=999)
@@ -411,6 +443,7 @@ async def test_where_public(admin_ids, conn):
 
 
 # ---------- /whoami ----------
+
 
 @pytest.mark.asyncio
 async def test_whoami_admin(admin_ids, conn):
