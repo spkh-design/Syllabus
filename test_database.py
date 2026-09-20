@@ -28,6 +28,10 @@ from database import (
     save_base_info,
     save_snapshot,
     set_setting,
+    save_week_image,
+    get_week_image,
+    delete_week_image,
+    cleanup_old_week_images,
 )
 
 
@@ -42,22 +46,21 @@ def conn(tmp_path):
 
 # ---------- init_db ----------
 
+
 def test_init_db_creates_tables(conn):
-    tables = {
-        r["name"] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-    }
-    assert {"settings", "snapshots", "base_info_cache",
-            "notifications_log"} <= tables
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert {"settings", "snapshots", "base_info_cache", "notifications_log"} <= tables
 
 
 def test_init_db_idempotent(tmp_path):
     """Многократный init не падает и не ломает схему."""
     p = tmp_path / "x.db"
-    c1 = init_db(p); c1.close()
-    c2 = init_db(p); c2.close()
-    c3 = init_db(p); c3.close()
+    c1 = init_db(p)
+    c1.close()
+    c2 = init_db(p)
+    c2.close()
+    c3 = init_db(p)
+    c3.close()
 
 
 def test_init_db_wal_mode(conn):
@@ -66,6 +69,7 @@ def test_init_db_wal_mode(conn):
 
 
 # ---------- Настройки ----------
+
 
 def test_set_get_setting(conn):
     set_setting(conn, "group_name", "419")
@@ -105,10 +109,17 @@ def test_delete_setting(conn):
 
 # ---------- Снимки ----------
 
+
 def test_save_and_get_snapshot(conn):
     lessons = [
-        {"number": 1, "subgroup": 0, "discipline": "Web",
-         "teacher": "Дубров", "auditoria": "43", "lesson_type": "Лекция"},
+        {
+            "number": 1,
+            "subgroup": 0,
+            "discipline": "Web",
+            "teacher": "Дубров",
+            "auditoria": "43",
+            "lesson_type": "Лекция",
+        }
     ]
     h = save_snapshot(conn, "grp-1", date(2026, 9, 12), lessons)
     assert isinstance(h, str) and len(h) == 64  # sha256 hex
@@ -121,18 +132,15 @@ def test_save_and_get_snapshot(conn):
 
 def test_snapshot_hash_is_stable(conn):
     """Один и тот же снимок даёт один и тот же хеш."""
-    lessons = [{"number": 1, "subgroup": 0, "discipline": "X",
-                "teacher": "Y", "auditoria": "1", "lesson_type": "L"}]
+    lessons = [{"number": 1, "subgroup": 0, "discipline": "X", "teacher": "Y", "auditoria": "1", "lesson_type": "L"}]
     h1 = save_snapshot(conn, "grp-1", date(2026, 9, 12), lessons)
     h2 = save_snapshot(conn, "grp-1", date(2026, 9, 12), lessons)
     assert h1 == h2
 
 
 def test_snapshot_hash_changes_on_content(conn):
-    l1 = [{"number": 1, "subgroup": 0, "discipline": "A",
-           "teacher": "T", "auditoria": "1", "lesson_type": "L"}]
-    l2 = [{"number": 1, "subgroup": 0, "discipline": "B",
-           "teacher": "T", "auditoria": "1", "lesson_type": "L"}]
+    l1 = [{"number": 1, "subgroup": 0, "discipline": "A", "teacher": "T", "auditoria": "1", "lesson_type": "L"}]
+    l2 = [{"number": 1, "subgroup": 0, "discipline": "B", "teacher": "T", "auditoria": "1", "lesson_type": "L"}]
     h1 = save_snapshot(conn, "grp-1", date(2026, 9, 12), l1)
     h2 = save_snapshot(conn, "grp-1", date(2026, 9, 12), l2)
     assert h1 != h2
@@ -171,6 +179,7 @@ def test_snapshot_date_accepts_string(conn):
 
 # ---------- Кэш справочников ----------
 
+
 def test_save_get_base_info(conn):
     data = {"divisions": [{"id": "d1", "name": "SP2"}]}
     save_base_info(conn, data)
@@ -195,6 +204,7 @@ def test_base_info_overwrites(conn):
 
 
 # ---------- Лог уведомлений ----------
+
 
 def test_log_and_last_notification(conn):
     log_notification(conn, "grp-1", date(2026, 9, 12), "diff", {"changes": 1})
@@ -224,9 +234,11 @@ def test_last_notification_isolated_by_group(conn):
 
 # ---------- Потокобезопасность ----------
 
+
 def test_concurrent_writes_do_not_crash(tmp_path):
     """10 потоков пишут 50 снимков — не падаем и не теряем данные."""
     import threading
+
     c = init_db(tmp_path / "concurrent.db")
 
     errors = []
@@ -234,16 +246,15 @@ def test_concurrent_writes_do_not_crash(tmp_path):
     def worker(i):
         try:
             for j in range(5):
-                save_snapshot(
-                    c, f"grp-{i}", date(2026, 9, 12 + j),
-                    [{"number": j}],
-                )
+                save_snapshot(c, f"grp-{i}", date(2026, 9, 12 + j), [{"number": j}])
         except Exception as e:
             errors.append(e)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
-    for t in threads: t.start()
-    for t in threads: t.join()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
     assert errors == []
     rows = c.execute("SELECT COUNT(*) AS n FROM snapshots").fetchone()
@@ -280,16 +291,14 @@ def test_setting_preserves_none(conn):
 def test_setting_handles_non_json_garbage(conn):
     """Если в БД лежит не-JSON — не падаем, возвращаем как есть."""
     with conn:
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?)",
-            ("broken", "not a json {{{"),
-        )
+        conn.execute("INSERT INTO settings (key, value) VALUES (?, ?)", ("broken", "not a json {{{"))
     # не должно упасть
     value = get_setting(conn, "broken", "default")
     assert value == "not a json {{{" or value == "default"
 
 
 # ---------- announced_weeks ----------
+
 
 def test_set_and_get_week_announced(conn):
     set_week_announced(conn, "grp-1", date(2026, 9, 14), is_full=True)
@@ -361,19 +370,15 @@ def test_cleanup_old_announced_weeks(conn):
     # Свежая неделя
     set_week_announced(conn, "grp-1", today, is_full=True)
     # Старая — 100 дней назад
-    set_week_announced(conn, "grp-1",
-                       today - timedelta(days=100), is_full=True)
+    set_week_announced(conn, "grp-1", today - timedelta(days=100), is_full=True)
     # Ещё одна свежая
-    set_week_announced(conn, "grp-1",
-                       today - timedelta(days=5), is_full=True)
+    set_week_announced(conn, "grp-1", today - timedelta(days=5), is_full=True)
 
     deleted = cleanup_old_announced_weeks(conn, keep_days=30)
     assert deleted == 1
     assert get_week_announced(conn, "grp-1", today) is not None
-    assert get_week_announced(conn, "grp-1",
-                              today - timedelta(days=100)) is None
-    assert get_week_announced(conn, "grp-1",
-                              today - timedelta(days=5)) is not None
+    assert get_week_announced(conn, "grp-1", today - timedelta(days=100)) is None
+    assert get_week_announced(conn, "grp-1", today - timedelta(days=5)) is not None
 
 
 def test_week_announced_full_flag_persists(conn):
@@ -391,8 +396,43 @@ def test_announced_weeks_persist_after_reconnect(conn, tmp_path):
 
     # Переоткрываем ту же БД
     from database import init_db
+
     conn2 = init_db(tmp_path / "test.db")
     row = get_week_announced(conn2, "grp-1", date(2026, 9, 14))
     assert row is not None
     assert row["is_full"] is True
     conn2.close()
+
+
+# ---------- week_images ----------
+
+
+def test_save_and_get_week_image(conn):
+    png = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+    save_week_image(conn, "grp-1", date(2026, 9, 21), png)
+    assert get_week_image(conn, "grp-1", date(2026, 9, 21)) == png
+
+
+def test_get_week_image_missing(conn):
+    assert get_week_image(conn, "grp-1", date(2026, 9, 21)) is None
+
+
+def test_save_week_image_overwrites(conn):
+    save_week_image(conn, "grp-1", date(2026, 9, 21), b"old")
+    save_week_image(conn, "grp-1", date(2026, 9, 21), b"new")
+    assert get_week_image(conn, "grp-1", date(2026, 9, 21)) == b"new"
+
+
+def test_delete_week_image(conn):
+    save_week_image(conn, "grp-1", date(2026, 9, 21), b"x")
+    delete_week_image(conn, "grp-1", date(2026, 9, 21))
+    assert get_week_image(conn, "grp-1", date(2026, 9, 21)) is None
+
+
+def test_cleanup_old_week_images(conn):
+    today = date(2026, 9, 21)
+    save_week_image(conn, "grp-1", today, b"new")
+    save_week_image(conn, "grp-1", today - timedelta(days=100), b"old")
+    deleted = cleanup_old_week_images(conn, keep_days=30)
+    assert deleted == 1
+    assert get_week_image(conn, "grp-1", today) is not None
