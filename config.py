@@ -65,6 +65,14 @@ if _raw_peer:
     except ValueError:
         logger.warning("ADMIN_PEER_ID: %r не число — приветствие не будет отправлено", _raw_peer)
 
+VK_GROUP_ID: int | None = None
+_raw_gid = os.getenv("VK_GROUP_ID", "").strip()
+if _raw_gid:
+    try:
+        VK_GROUP_ID = int(_raw_gid)
+    except ValueError:
+        logger.warning("VK_GROUP_ID: %r не число — игнорирую", _raw_gid)
+
 
 def is_admin_id(user_id: int) -> bool:
     """True, если user_id входит в список админов.
