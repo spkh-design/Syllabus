@@ -205,7 +205,7 @@ async def background_checker():
                             await send_schedule_message(
                                 bot.api, int(peer_id), msg, conn=conn, group_uuid=str(group_uuid)
                             )
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(2.0)
                         except Exception as e:
                             logger.error("Ошибка отправки: %s", e)
             else:
