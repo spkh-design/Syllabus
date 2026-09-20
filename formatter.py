@@ -44,10 +44,7 @@ def _short_territory(full_name: str) -> str:
     return m.group(0) if m else ""
 
 
-def _format_lesson_line(
-    lesson: dict, weekday: int, home_territory: str = "",
-    *, changed: bool = False,
-) -> str:
+def _format_lesson_line(lesson: dict, weekday: int, home_territory: str = "", *, changed: bool = False) -> str:
     """Одна пара в 4 строках.
 
     Если territory пары не совпадает с home_territory (или home пустой,
@@ -77,8 +74,7 @@ def _format_lesson_line(
     lines = [
         f"{mark}{number}. {time}{sub}",
         f"   {lesson.get('discipline', '—')}",
-        f"   {lesson.get('lesson_type', '—')} | {location} | "
-        f"{lesson.get('teacher', '—')}",
+        f"   {lesson.get('lesson_type', '—')} | {location} | " f"{lesson.get('teacher', '—')}",
     ]
     return "\n".join(lines)
 
@@ -93,21 +89,16 @@ def _format_day_header(d: date_type, *, prefix: str = "") -> str:
     return head
 
 
-def _format_week_header(
-    start_date: date_type, *, prefix: str = "",
-) -> str:
+def _format_week_header(start_date: date_type, *, prefix: str = "") -> str:
     """Шапка недели: 'dd.mm–dd.mm' + опциональный префикс."""
     end_date = start_date + timedelta(days=6)
-    range_str = (f"{start_date.strftime('%d.%m')}–"
-                 f"{end_date.strftime('%d.%m')}")
+    range_str = f"{start_date.strftime('%d.%m')}–" f"{end_date.strftime('%d.%m')}"
     if prefix:
         return f"{prefix} {range_str}"
     return range_str
 
 
-def format_day_schedule(
-    day: date_type, lessons: list[dict], home_territory: str = "",
-) -> str:
+def format_day_schedule(day: date_type, lessons: list[dict], home_territory: str = "") -> str:
     """Расписание одного дня. Без пары — 'Пар нет'."""
     head = _format_day_header(day)
     if not lessons:
@@ -119,14 +110,13 @@ def format_day_schedule(
     return "\n\n".join(blocks)
 
 
-def format_week_schedule(
-    start_date: date_type, week: dict[date_type, list[dict]],
-    home_territory: str = "",
-) -> str:
+def format_week_schedule(start_date: date_type, week: dict[date_type, list[dict]], home_territory: str = "") -> str:
     """Расписание на неделю. Все 7 дней, включая пустые."""
-    head = (f"📅 Расписание на неделю "
-            f"с {start_date.strftime('%d.%m.%Y')} "
-            f"по {(start_date + timedelta(days=6)).strftime('%d.%m.%Y')}")
+    head = (
+        f"📅 Расписание на неделю "
+        f"с {start_date.strftime('%d.%m.%Y')} "
+        f"по {(start_date + timedelta(days=6)).strftime('%d.%m.%Y')}"
+    )
     blocks = [head]
 
     for offset in range(7):
@@ -146,9 +136,7 @@ def format_week_schedule(
     return "\n".join(blocks).rstrip()
 
 
-def format_changes(
-    day: date_type, changes: list[Change], new_lessons: list[dict],
-) -> str:
+def format_changes(day: date_type, changes: list[Change], new_lessons: list[dict]) -> str:
     """Короткое сообщение об изменениях (diff) по одному дню.
 
     Если изменений нет — вернёт пустую строку.
@@ -164,17 +152,14 @@ def format_changes(
         lines.append("")
 
     summary = summarize_changes(changes)
-    tail = (f"Всего: добавлено {summary['add']}, "
-            f"отменено {summary['remove']}, "
-            f"изменено {summary['modify']}")
+    tail = f"Всего: добавлено {summary['add']}, " f"отменено {summary['remove']}, " f"изменено {summary['modify']}"
     lines.append(tail)
 
     return "\n".join(lines).rstrip()
 
 
 def format_day_changes_full(
-    day: date_type, changes: list[Change], new_lessons: list[dict],
-    home_territory: str = "",
+    day: date_type, changes: list[Change], new_lessons: list[dict], home_territory: str = ""
 ) -> str:
     """Полное расписание дня с пометкой об изменениях.
 
@@ -191,16 +176,12 @@ def format_day_changes_full(
     blocks = [head, ""]
     for lesson in new_lessons:
         key = (lesson["number"], lesson["subgroup"])
-        blocks.append(_format_lesson_line(
-            lesson, day.weekday(), home_territory,
-            changed=(key in changed_keys),
-        ))
+        blocks.append(_format_lesson_line(lesson, day.weekday(), home_territory, changed=(key in changed_keys)))
 
     summary = summarize_changes(changes)
     blocks.append("")
     blocks.append(
-        f"Всего изменений: {len(changes)} "
-        f"(+{summary['add']} / -{summary['remove']} / ~{summary['modify']})"
+        f"Всего изменений: {len(changes)} " f"(+{summary['add']} / -{summary['remove']} / ~{summary['modify']})"
     )
 
     return "\n\n".join(blocks)
@@ -254,10 +235,7 @@ def format_week_changes_full(
 
         for lesson in lessons:
             key = (lesson["number"], lesson["subgroup"])
-            blocks.append(_format_lesson_line(
-                lesson, d.weekday(), home_territory,
-                changed=(key in changed_keys),
-            ))
+            blocks.append(_format_lesson_line(lesson, d.weekday(), home_territory, changed=(key in changed_keys)))
         blocks.append("")
 
         # Считаем статистику
@@ -268,10 +246,7 @@ def format_week_changes_full(
             total_remove += s["remove"]
             total_modify += s["modify"]
 
-    blocks.append(
-        f"Всего изменений за неделю: {total_changes} "
-        f"(+{total_add} / -{total_remove} / ~{total_modify})"
-    )
+    blocks.append(f"Всего изменений за неделю: {total_changes} " f"(+{total_add} / -{total_remove} / ~{total_modify})")
 
     return "\n".join(blocks).rstrip()
 

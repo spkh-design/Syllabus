@@ -35,16 +35,13 @@ from vkbottle.bot import Message
 import database as db
 import schedule_api
 from config import is_admin_id
-from formatter import (
-    format_day_schedule,
-    format_week_schedule,
-    split_message,
-)
+from formatter import format_day_schedule, format_week_schedule, split_message
 
 logger = logging.getLogger(__name__)
 
 
 # ---------- Утилиты ----------
+
 
 def _peer_id(message: Message) -> int:
     """Возвращает peer_id сообщения."""
@@ -69,12 +66,8 @@ async def _require_admin(message: Message) -> bool:
         # ... остальная логика ...
     """
     if not is_admin(message):
-        logger.info("Отказ в админ-команде: from_id=%s, text=%r",
-                    message.from_id, message.text[:80])
-        await message.answer(
-            "❌ У вас нет прав на эту команду.\n"
-            "Обратитесь к владельцу бота."
-        )
+        logger.info("Отказ в админ-команде: from_id=%s, text=%r", message.from_id, message.text[:80])
+        await message.answer("❌ У вас нет прав на эту команду.\n" "Обратитесь к владельцу бота.")
         return False
     return True
 
@@ -105,6 +98,7 @@ def _current_monday(d: date) -> date:
 
 # ---------- Публичные команды ----------
 
+
 async def cmd_start(message: Message, conn) -> None:
     text = (
         "👋 Привет! Я бот расписания СПК.\n\n"
@@ -133,14 +127,9 @@ async def cmd_where(message: Message, conn) -> None:
     group_name = db.get_setting(conn, "group_name")
     division = db.get_setting(conn, "division")
     if not group_name:
-        await message.answer(
-            "⚠️ Группа ещё не настроена.\n"
-            "Попросите администратора выполнить /group СП-4 419"
-        )
+        await message.answer("⚠️ Группа ещё не настроена.\n" "Попросите администратора выполнить /group СП-4 419")
         return
-    await message.answer(
-        f"📍 Текущая настройка: {division} / {group_name}"
-    )
+    await message.answer(f"📍 Текущая настройка: {division} / {group_name}")
 
 
 async def cmd_today(message: Message, conn) -> None:
@@ -166,8 +155,7 @@ async def _send_day(message: Message, conn, target: date) -> None:
         lessons = schedule_api.get_group_lessons(base, group_uuid, target)
     except schedule_api.ScheduleAPIError as e:
         logger.error("Ошибка API: %s", e)
-        await message.answer("⚠️ Не удалось получить расписание. "
-                             "Попробуйте позже.")
+        await message.answer("⚠️ Не удалось получить расписание. " "Попробуйте позже.")
         return
 
     home = schedule_api.home_territory(base, group_uuid)
@@ -217,15 +205,14 @@ async def cmd_status(message: Message, conn) -> None:
     """Статус бота. Только для админов."""
     if not await _require_admin(message):
         return
-    
+
     group_name = db.get_setting(conn, "group_name")
     division = db.get_setting(conn, "division")
     peer_id = db.get_setting(conn, "peer_id")
     base_age = db.base_info_age_hours(conn)
 
     lines = ["📊 Статус:"]
-    lines.append(f"  Группа: {division} / {group_name}" if group_name
-                 else "  Группа: не настроена")
+    lines.append(f"  Группа: {division} / {group_name}" if group_name else "  Группа: не настроена")
     lines.append(f"  Peer ID: {peer_id}" if peer_id else "  Peer ID: —")
     if base_age is None:
         lines.append("  Справочники: не загружены")
@@ -255,6 +242,7 @@ async def cmd_whoami(message: Message, conn) -> None:
 
 # ---------- Админские команды ----------
 
+
 async def cmd_group(message: Message, conn, args: str) -> None:
     """args — '<подразделение> <группа>'. Только для админов."""
     if not await _require_admin(message):
@@ -263,23 +251,20 @@ async def cmd_group(message: Message, conn, args: str) -> None:
     parts = args.strip().split()
     if len(parts) != 2:
         await message.answer(
-            "❌ Формат: /group СП-4 419\n"
-            "Первое — подразделение (СП-1..СП-5), второе — номер группы."
+            "❌ Формат: /group СП-4 419\n" "Первое — подразделение (СП-1..СП-5), второе — номер группы."
         )
         return
 
     division, group_name = parts
     base = _load_base(conn)
     if base is None:
-        await message.answer("⚠️ Не удалось получить справочники. "
-                             "Попробуйте позже.")
+        await message.answer("⚠️ Не удалось получить справочники. " "Попробуйте позже.")
         return
 
     group = schedule_api.find_group(base, group_name, division)
     if group is None:
         await message.answer(
-            f"❌ Группа «{group_name}» в подразделении «{division}» не найдена.\n"
-            f"Проверьте номер и подразделение."
+            f"❌ Группа «{group_name}» в подразделении «{division}» не найдена.\n" f"Проверьте номер и подразделение."
         )
         return
 
@@ -303,9 +288,7 @@ async def cmd_unsubscribe(message: Message, conn) -> None:
         return
     for key in ("peer_id", "group_uuid", "group_name", "division"):
         db.delete_setting(conn, key)
-    await message.answer(
-        "✅ Отписка выполнена. Чтобы снова подписаться: /group СП-4 419"
-    )
+    await message.answer("✅ Отписка выполнена. Чтобы снова подписаться: /group СП-4 419")
 
 
 async def cmd_interval(message: Message, conn, args: str) -> None:
@@ -315,10 +298,7 @@ async def cmd_interval(message: Message, conn, args: str) -> None:
 
     args = args.strip()
     if not args.isdigit():
-        await message.answer(
-            "❌ Формат: /interval 15\n"
-            "Число — интервал в минутах (минимум 5)."
-        )
+        await message.answer("❌ Формат: /interval 15\n" "Число — интервал в минутах (минимум 5).")
         return
 
     minutes = int(args)
@@ -330,10 +310,7 @@ async def cmd_interval(message: Message, conn, args: str) -> None:
         return
 
     db.set_setting(conn, "check_interval_minutes", minutes)
-    await message.answer(
-        f"✅ Интервал проверки: {minutes} минут.\n"
-        f"Изменение вступит в силу со следующего цикла."
-    )
+    await message.answer(f"✅ Интервал проверки: {minutes} минут.\n" f"Изменение вступит в силу со следующего цикла.")
 
 
 async def cmd_test(message: Message, conn) -> None:
@@ -346,10 +323,7 @@ async def cmd_test(message: Message, conn) -> None:
         await message.answer("⚠️ Сначала настройте группу: /group СП-4 419")
         return
 
-    await message.answer(
-        "🔔 Тестовое уведомление. Если вы его видите — бот работает.\n"
-        f"Группа: {group_name}"
-    )
+    await message.answer("🔔 Тестовое уведомление. Если вы его видите — бот работает.\n" f"Группа: {group_name}")
     await cmd_today(message, conn)
 
 
@@ -386,11 +360,7 @@ async def cmd_subscribers(message: Message, conn) -> None:
         await message.answer("⚠️ Нет активных подписчиков.")
         return
 
-    text = (
-        "👥 Подписчики:\n"
-        f"  peer_id={peer_id}\n"
-        f"  группа: {division} / {group_name}"
-    )
+    text = "👥 Подписчики:\n" f"  peer_id={peer_id}\n" f"  группа: {division} / {group_name}"
     await message.answer(text)
 
 
@@ -413,11 +383,11 @@ async def cmd_week_skip(message: Message, conn, args: str = "") -> None:
     if args:
         try:
             from datetime import datetime as _dt
+
             d = _dt.strptime(args, "%d.%m.%Y").date()
         except ValueError:
             await message.answer(
-                "❌ Формат: /week_skip или /week_skip 21.09.2026\n"
-                "Без аргумента — для следующей недели."
+                "❌ Формат: /week_skip или /week_skip 21.09.2026\n" "Без аргумента — для следующей недели."
             )
             return
     else:

@@ -40,8 +40,14 @@ MASSIVE_DAYS_FOR_WEEK = 3
 
 # Включает реальные значения из API СПК
 SELF_STUDY_AUDITORIA = {
-    "ср", "ср-1", "ср-2", "ср-3", "ср-4",
-    "дистант", "дист.об.", "дистанционное занятие",
+    "ср",
+    "ср-1",
+    "ср-2",
+    "ср-3",
+    "ср-4",
+    "дистант",
+    "дист.об.",
+    "дистанционное занятие",
     "дистантанционное обучение",
 }
 
@@ -59,6 +65,7 @@ class Change:
         lesson:  новая (add/modify) или старая (remove) пара
         fields:  для modify — {поле: (было, стало)}
     """
+
     type: ChangeType
     number: int
     subgroup: int
@@ -116,13 +123,9 @@ def diff_lessons(old: list[dict], new: list[dict]) -> list[Change]:
         number, subgroup = k
 
         if o is None and n is not None:
-            changes.append(Change(
-                type="add", number=number, subgroup=subgroup, lesson=n,
-            ))
+            changes.append(Change(type="add", number=number, subgroup=subgroup, lesson=n))
         elif n is None and o is not None:
-            changes.append(Change(
-                type="remove", number=number, subgroup=subgroup, lesson=o,
-            ))
+            changes.append(Change(type="remove", number=number, subgroup=subgroup, lesson=o))
         elif o is not None and n is not None:
             fields = {}
             for f in TRACKED_FIELDS:
@@ -138,10 +141,7 @@ def diff_lessons(old: list[dict], new: list[dict]) -> list[Change]:
 
                 fields[f] = (old_v, new_v)
             if fields:
-                changes.append(Change(
-                    type="modify", number=number, subgroup=subgroup,
-                    lesson=n, fields=fields,
-                ))
+                changes.append(Change(type="modify", number=number, subgroup=subgroup, lesson=n, fields=fields))
 
     return changes
 
@@ -205,7 +205,7 @@ def _change_signature(change: Change) -> Optional[tuple]:
     if change.type == "modify":
         if len(change.fields) != 1:
             return None
-        (fname, (old_v, new_v)), = change.fields.items()
+        ((fname, (old_v, new_v)),) = change.fields.items()
         return ("modify", fname, old_v, new_v)
 
     if change.type in ("add", "remove"):
@@ -239,15 +239,19 @@ def describe_change(change: Change) -> str:
 
     if change.type == "add":
         l = change.lesson
-        return (f"➕ {head}: добавлена — {l.get('discipline', '—')} "
-                f"({l.get('lesson_type', '—')}), {_location(l)}, "
-                f"{l.get('teacher', '—')}")
+        return (
+            f"➕ {head}: добавлена — {l.get('discipline', '—')} "
+            f"({l.get('lesson_type', '—')}), {_location(l)}, "
+            f"{l.get('teacher', '—')}"
+        )
 
     if change.type == "remove":
         l = change.lesson
-        return (f"➖ {head}: отменена — была {l.get('discipline', '—')} "
-                f"({l.get('lesson_type', '—')}), {_location(l)}, "
-                f"{l.get('teacher', '—')}")
+        return (
+            f"➖ {head}: отменена — была {l.get('discipline', '—')} "
+            f"({l.get('lesson_type', '—')}), {_location(l)}, "
+            f"{l.get('teacher', '—')}"
+        )
 
     # modify
     field_names = {
@@ -275,9 +279,7 @@ def summarize_changes(changes: list[Change]) -> dict:
     return summary
 
 
-def count_changed_days(
-    changes_by_day: dict[date_type, list[Change]],
-) -> int:
+def count_changed_days(changes_by_day: dict[date_type, list[Change]]) -> int:
     """Считает, в скольких днях есть хотя бы одно изменение.
 
     Args:

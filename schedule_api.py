@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import time
 import re
-from datetime import date as date_type, datetime, timedelta, timezone
+from datetime import date as date_type, datetime, timedelta
 from typing import Optional
 
 import requests
@@ -42,9 +42,9 @@ HEADERS = {
     ),
 }
 
-TIMEOUT = 30                # секунд на один запрос
-MAX_RETRIES = 3             # попыток при 429/503/сетевых ошибках
-BACKOFF_BASE = 2            # 2, 4, 8 секунд между попытками
+TIMEOUT = 30  # секунд на один запрос
+MAX_RETRIES = 3  # попыток при 429/503/сетевых ошибках
+BACKOFF_BASE = 2  # 2, 4, 8 секунд между попытками
 
 
 class ScheduleAPIError(Exception):
@@ -57,6 +57,7 @@ class ScheduleNotFoundError(ScheduleAPIError):
 
 # ---------- HTTP-обёртка с ретраями ----------
 
+
 def _request(url: str, params: Optional[dict] = None) -> dict:
     """GET-запрос с ретраями. Возвращает распарсенный JSON.
 
@@ -67,9 +68,7 @@ def _request(url: str, params: Optional[dict] = None) -> dict:
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.get(
-                url, params=params, headers=HEADERS, timeout=TIMEOUT,
-            )
+            response = requests.get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
         except requests.RequestException as e:
             last_exc = e
             logger.warning("Сетевая ошибка (попытка %d): %s", attempt + 1, e)
@@ -78,21 +77,13 @@ def _request(url: str, params: Optional[dict] = None) -> dict:
                 try:
                     return response.json()
                 except ValueError as e:
-                    raise ScheduleAPIError(
-                        f"Ответ не является JSON: {e}"
-                    ) from e
+                    raise ScheduleAPIError(f"Ответ не является JSON: {e}") from e
 
             if response.status_code in (429, 500, 502, 503, 504):
-                last_exc = ScheduleAPIError(
-                    f"HTTP {response.status_code}"
-                )
-                logger.warning(
-                    "HTTP %d (попытка %d)", response.status_code, attempt + 1,
-                )
+                last_exc = ScheduleAPIError(f"HTTP {response.status_code}")
+                logger.warning("HTTP %d (попытка %d)", response.status_code, attempt + 1)
             else:
-                raise ScheduleAPIError(
-                    f"HTTP {response.status_code}: {response.text[:200]}"
-                )
+                raise ScheduleAPIError(f"HTTP {response.status_code}: {response.text[:200]}")
 
         if attempt < MAX_RETRIES - 1:
             delay = BACKOFF_BASE ** (attempt + 1)
@@ -102,6 +93,7 @@ def _request(url: str, params: Optional[dict] = None) -> dict:
 
 
 # ---------- Публичные функции ----------
+
 
 def fetch_base_info() -> dict:
     """Загружает справочники. Возвращает data из baseInfo."""
@@ -115,16 +107,8 @@ def fetch_base_info() -> dict:
 
 
 def fetch_schedule(target_date: date_type) -> dict:
-    """Загружает сырое расписание на дату.
-
-    Timestamp формируется в полдень UTC — так дата не «съезжает»
-    ни в одном часовом поясе.
-    """
-    dt = datetime(
-        target_date.year, target_date.month, target_date.day,
-        12, 0, tzinfo=timezone.utc,
-    )
-    ts_ms = int(dt.timestamp() * 1000)
+    """Загружает сырое расписание на дату."""
+    ts_ms = int(datetime(target_date.year, target_date.month, target_date.day).timestamp() * 1000)
     payload = _request(SCHEDULE_ENDPOINT, params={"date": ts_ms})
     if not payload.get("success"):
         raise ScheduleAPIError(f"schedule: success=false на {target_date}")
@@ -138,6 +122,7 @@ def build_lookup(base: dict) -> dict[str, dict[str, str]]:
         divisions, groups, teachers, disciplines,
         lesson_types, auditoria, territories
     """
+
     def index(items, name_field="name"):
         return {it["id"]: it.get(name_field) or "—" for it in items}
 
@@ -147,20 +132,28 @@ def build_lookup(base: dict) -> dict[str, dict[str, str]]:
         "teachers": index(base.get("teachers", [])),
         "disciplines": index(base.get("disciplines", [])),
         "lesson_types": index(base.get("lesson_Types", [])),
-        "auditoria": {
-            a["id"]: a.get("short_name") or a.get("name") or "—"
-            for a in base.get("audithories", [])
-        },
+        "auditoria": {a["id"]: a.get("short_name") or a.get("name") or "—" for a in base.get("audithories", [])},
         "territories": index(base.get("territories", [])),
     }
 
 
 # Визуально неотличимые символы: латиница -> кириллица
-_LOOKALIKE = str.maketrans({
-    "a": "а", "c": "с", "e": "е", "o": "о", "p": "р",
-    "x": "х", "y": "у", "k": "к", "m": "м", "t": "т",
-    "h": "н", "b": "в",  # b/v визуально разные, но иногда путают
-})
+_LOOKALIKE = str.maketrans(
+    {
+        "a": "а",
+        "c": "с",
+        "e": "е",
+        "o": "о",
+        "p": "р",
+        "x": "х",
+        "y": "у",
+        "k": "к",
+        "m": "м",
+        "t": "т",
+        "h": "н",
+        "b": "в",  # b/v визуально разные, но иногда путают
+    }
+)
 
 
 def _normalize_division(s: str) -> str:
@@ -173,9 +166,7 @@ def _normalize_division(s: str) -> str:
     return re.sub(r"[^а-яa-z0-9]", "", s)
 
 
-def find_group(
-    base: dict, name: str, division_part: Optional[str] = None,
-) -> Optional[dict]:
+def find_group(base: dict, name: str, division_part: Optional[str] = None) -> Optional[dict]:
     division_id: Optional[str] = None
     if division_part:
         needle = _normalize_division(division_part)
@@ -195,9 +186,7 @@ def find_group(
     return None
 
 
-def get_group_lessons(
-    base: dict, group_uuid: str, target_date: date_type,
-) -> list[dict]:
+def get_group_lessons(base: dict, group_uuid: str, target_date: date_type) -> list[dict]:
     """Возвращает читаемые пары группы на дату.
 
     Каждая пара — словарь:
@@ -215,16 +204,12 @@ def get_group_lessons(
     lookup = build_lookup(base)
     payload = fetch_schedule(target_date)
 
-    days = (
-        payload.get("schedule", {})
-        .get("data", {})
-        .get("schedule", [])
-    )
+    days = payload.get("schedule", {}).get("data", {}).get("schedule", [])
 
     # API иногда возвращает весь период. Ищем нужный день по timestamp.
     day = None
     for d in days:
-        d_date = datetime.fromtimestamp(d["date"] / 1000, tz=timezone.utc,).date()
+        d_date = datetime.fromtimestamp(d["date"] / 1000).date()
         if d_date == target_date:
             day = d
             break
@@ -237,21 +222,21 @@ def get_group_lessons(
 
     result = []
     for l in lessons:
-        result.append({
-            "number": l["number_lesson"],
-            "subgroup": l["subgroup"],
-            "discipline": lookup["disciplines"].get(l["discipline"], "—"),
-            "teacher": lookup["teachers"].get(l["teacher"], "—"),
-            "auditoria": lookup["auditoria"].get(l["auditoria"], "—"),
-            "lesson_type": lookup["lesson_types"].get(l["lesson_type"], "—"),
-            "territory": lookup["territories"].get(l.get("territory"), ""),
-        })
+        result.append(
+            {
+                "number": l["number_lesson"],
+                "subgroup": l["subgroup"],
+                "discipline": lookup["disciplines"].get(l["discipline"], "—"),
+                "teacher": lookup["teachers"].get(l["teacher"], "—"),
+                "auditoria": lookup["auditoria"].get(l["auditoria"], "—"),
+                "lesson_type": lookup["lesson_types"].get(l["lesson_type"], "—"),
+                "territory": lookup["territories"].get(l.get("territory"), ""),
+            }
+        )
     return result
 
 
-def get_week_lessons(
-    base: dict, group_uuid: str, start_date: date_type,
-) -> dict[date_type, list[dict]]:
+def get_week_lessons(base: dict, group_uuid: str, start_date: date_type) -> dict[date_type, list[dict]]:
     """Возвращает {дата: [пары]} для 7 дней начиная со start_date."""
     result: dict[date_type, list[dict]] = {}
     for offset in range(7):
