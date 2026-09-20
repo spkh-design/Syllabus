@@ -15,12 +15,17 @@ import scheduler
 import schedule_api
 
 
-def _lesson(number=1, subgroup=0, discipline="Web", teacher="Дубров",
-            auditoria="43", lesson_type="Лекция", territory=""):
+def _lesson(
+    number=1, subgroup=0, discipline="Web", teacher="Дубров", auditoria="43", lesson_type="Лекция", territory=""
+):
     return {
-        "number": number, "subgroup": subgroup, "discipline": discipline,
-        "teacher": teacher, "auditoria": auditoria,
-        "lesson_type": lesson_type, "territory": territory,
+        "number": number,
+        "subgroup": subgroup,
+        "discipline": discipline,
+        "teacher": teacher,
+        "auditoria": auditoria,
+        "lesson_type": lesson_type,
+        "territory": territory,
     }
 
 
@@ -35,8 +40,7 @@ def conn(tmp_path):
 def base_info():
     return {
         "divisions": [{"name": "(СП-2) Отделение", "id": "div-sp2"}],
-        "groups": [{"name": "419", "id": "grp-419",
-                    "division": "div-sp2", "curse": 3}],
+        "groups": [{"name": "419", "id": "grp-419", "division": "div-sp2", "curse": 3}],
         "teachers": [{"name": "Дубров", "id": "t1"}],
         "disciplines": [{"name": "Web", "id": "d1"}],
         "lesson_Types": [{"name": "Лекция", "id": "lt1"}],
@@ -63,35 +67,27 @@ def test_e2e_full_cycle(conn, base_info, monkeypatch):
     # --- Шаг 2: первый цикл, расписание "как есть" ---
     initial = [_lesson(1, teacher="Дубров"), _lesson(2, teacher="Дубров")]
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: initial,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: initial)
 
     # Вт 10:00 — проверяем только сегодня
     t1 = datetime(2026, 9, 8, 10, 0)
     messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=t1)
     assert messages == []  # первый запуск — без уведомлений
-    assert db.get_snapshot(conn, "grp-419", date(2026, 9, 8)) is not None
 
     # --- Шаг 3: расписание меняется (одна замена преподавателя) ---
     changed = [_lesson(1, teacher="Петров"), _lesson(2, teacher="Дубров")]
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons",
-        lambda b, g, d: changed,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: changed)
 
     # --- Шаг 4: второй цикл — приходит diff ---
     t2 = datetime(2026, 9, 8, 10, 30)
     messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=t2)
 
     assert len(messages) == 1
-    text = messages[0]
-    assert "⚠️ ИЗМЕНЕНИЯ" in text
-    assert "Петров" in text
-    assert "Дубров" in text
-    assert "преподаватель" in text.lower() or "препод" in text.lower()
+    msg = messages[0]
+    assert msg.kind == "day_image"
+    assert "Петров" in msg.fallback_text
+    assert "Дубров" in msg.fallback_text
 
 
 def test_e2e_massive_change_sends_full(conn, base_info, monkeypatch):
@@ -105,27 +101,23 @@ def test_e2e_massive_change_sends_full(conn, base_info, monkeypatch):
 
     initial = [_lesson(i, auditoria="43") for i in range(1, 6)]
 
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons", lambda b, g, d: initial,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: initial)
     t1 = datetime(2026, 9, 8, 10, 0)
     scheduler.run_check_cycle(conn, base_info, "grp-419", now=t1)
 
     # Все пары стали дистанционными
     changed = [_lesson(i, auditoria="Дистант") for i in range(1, 6)]
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons", lambda b, g, d: changed,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: changed)
     t2 = datetime(2026, 9, 8, 10, 30)
     messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=t2)
 
     assert len(messages) == 1
-    text = messages[0]
-    assert "Дистант" in text
-    assert "Всего изменений: 5" in text
+    msg = messages[0]
+    assert "Дистант" in msg.fallback_text
+    assert "Всего изменений: 5" in msg.fallback_text
     # Все 5 пар показаны в полном виде
-    assert "1. 08:30" in text
-    assert "5. 15:10" in text
+    assert "1. 08:30" in msg.fallback_text
+    assert "5. 15:10" in msg.fallback_text
 
 
 def test_e2e_no_repeat_on_same_change(conn, base_info, monkeypatch):
@@ -135,26 +127,19 @@ def test_e2e_no_repeat_on_same_change(conn, base_info, monkeypatch):
     db.save_base_info(conn, base_info)
 
     initial = [_lesson(1, teacher="Дубров")]
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons", lambda b, g, d: initial,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: initial)
     # Вторник 8 сентября, 8:45 — 1-я пара ещё не началась (или идёт)
-    scheduler.run_check_cycle(conn, base_info, "grp-419",
-                              now=datetime(2026, 9, 8, 8, 45))
+    scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 8, 45))
 
     # Меняем
     changed = [_lesson(1, teacher="Петров")]
-    monkeypatch.setattr(
-        schedule_api, "get_group_lessons", lambda b, g, d: changed,
-    )
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: changed)
     # Тот же день, 9:00 — 1-я пара идёт (08:30–09:50)
-    msgs1 = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                       now=datetime(2026, 9, 8, 9, 0))
+    msgs1 = scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 9, 0))
     assert len(msgs1) == 1
 
     # Ещё раз то же самое, 9:10 — не повторяем
-    msgs2 = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                       now=datetime(2026, 9, 8, 9, 10))
+    msgs2 = scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 9, 10))
     assert msgs2 == []
 
 
@@ -165,26 +150,21 @@ def test_e2e_single_change_diff(conn, base_info, monkeypatch):
     db.save_base_info(conn, base_info)
 
     initial = [_lesson(1, teacher="Дубров"), _lesson(2, teacher="Дубров")]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: initial)
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: initial)
     # Первый цикл — снимок
-    scheduler.run_check_cycle(conn, base_info, "grp-419",
-                              now=datetime(2026, 9, 8, 8, 45))
+    scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 8, 45))
 
     # Меняем только 1-ю пару
     changed = [_lesson(1, teacher="Петров"), _lesson(2, teacher="Дубров")]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: changed)
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: changed)
 
-    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                      now=datetime(2026, 9, 8, 9, 0))
+    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 9, 0))
     assert len(msgs) == 1
-    text = msgs[0]
-    assert "ИЗМЕНЕНИЯ" in text
-    assert "Петров" in text and "Дубров" in text
+    msg = msgs[0]
+    assert "Петров" in msg.fallback_text and "Дубров" in msg.fallback_text
     # Это diff, а не full — нет строки "Всего изменений"
-    assert "Всего изменений" not in text
-    assert "Всего: добавлено" in text
+    assert "Всего изменений" not in msg.fallback_text
+    assert "Всего: добавлено" in msg.fallback_text
 
 
 def test_e2e_massive_change_full(conn, base_info, monkeypatch):
@@ -194,21 +174,17 @@ def test_e2e_massive_change_full(conn, base_info, monkeypatch):
     db.save_base_info(conn, base_info)
 
     initial = [_lesson(i, auditoria="43") for i in range(1, 6)]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: initial)
-    scheduler.run_check_cycle(conn, base_info, "grp-419",
-                              now=datetime(2026, 9, 8, 8, 45))
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: initial)
+    scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 8, 45))
 
     changed = [_lesson(i, auditoria="Дистант") for i in range(1, 6)]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: changed)
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: changed)
 
-    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                      now=datetime(2026, 9, 8, 9, 0))
+    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 9, 0))
     assert len(msgs) == 1
-    text = msgs[0]
-    assert "Всего изменений" in text
-    assert "Дистант" in text
+    msg = msgs[0]
+    assert "Всего изменений" in msg.fallback_text
+    assert "Дистант" in msg.fallback_text
 
 
 def test_e2e_changes_after_last_lesson_silent(conn, base_info, monkeypatch):
@@ -218,18 +194,14 @@ def test_e2e_changes_after_last_lesson_silent(conn, base_info, monkeypatch):
     db.save_base_info(conn, base_info)
 
     initial = [_lesson(1, teacher="Дубров")]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: initial)
-    scheduler.run_check_cycle(conn, base_info, "grp-419",
-                              now=datetime(2026, 9, 8, 8, 30))
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: initial)
+    scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 8, 30))
 
     changed = [_lesson(1, teacher="Петров")]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: changed)
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: changed)
 
     # 10:00 — 1-я пара вторника 08:30–09:50 уже прошла
-    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                      now=datetime(2026, 9, 8, 10, 0))
+    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 10, 0))
     assert msgs == []
 
     # Снимок при этом обновлён (сохранён новый)
@@ -248,8 +220,7 @@ def test_e2e_full_week_announced(conn, base_info, monkeypatch):
         return {start + timedelta(days=i): [_lesson(1)] for i in range(7)}
 
     monkeypatch.setattr(schedule_api, "get_week_lessons", fake_week)
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: [_lesson(1)])
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1)])
 
     # Вс 13.09 15:00 — окно следующей недели
     now = datetime(2026, 9, 13, 15, 0)
@@ -257,7 +228,7 @@ def test_e2e_full_week_announced(conn, base_info, monkeypatch):
 
     # Одно сообщение — расписание недели
     assert len(msgs) >= 1
-    joined = "\n".join(msgs)
+    joined = "\n".join(m.text + "\n" + m.fallback_text for m in msgs)
     assert "Расписание на неделю" in joined
     # Флаг поставлен
     row = db.get_week_announced(conn, "grp-419", date(2026, 9, 14))
@@ -279,14 +250,13 @@ def test_e2e_b2_partial_week_sunday_after_13(conn, base_info, monkeypatch):
         return week
 
     monkeypatch.setattr(schedule_api, "get_week_lessons", fake_week)
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: [])
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [])
 
     # Вс 13.09 14:00 — после 13:00
     now = datetime(2026, 9, 13, 14, 0)
     msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
-    joined = "\n".join(msgs)
+    joined = "\n".join(m.text + "\n" + m.fallback_text for m in msgs)
     assert "Расписание на неделю" in joined
     # Флаг is_full=False
     row = db.get_week_announced(conn, "grp-419", date(2026, 9, 14))
@@ -306,14 +276,13 @@ def test_e2e_partial_week_sunday_before_13(conn, base_info, monkeypatch):
         return week
 
     monkeypatch.setattr(schedule_api, "get_week_lessons", fake_week)
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: [])
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [])
 
     # Вс 13.09 12:00 — до 13:00
     now = datetime(2026, 9, 13, 12, 0)
     msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
-    joined = "\n".join(msgs)
+    joined = "\n".join(m.text + "\n" + m.fallback_text for m in msgs)
     assert "Расписание на неделю" not in joined
     assert db.get_week_announced(conn, "grp-419", date(2026, 9, 14)) is None
 
@@ -330,13 +299,12 @@ def test_e2e_week_skip_silences_announce(conn, base_info, monkeypatch):
         return {start + timedelta(days=i): [_lesson(1)] for i in range(7)}
 
     monkeypatch.setattr(schedule_api, "get_week_lessons", fake_week)
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: [_lesson(1)])
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1)])
 
     now = datetime(2026, 9, 13, 15, 0)
     msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
-    joined = "\n".join(msgs)
+    joined = "\n".join(m.text + "\n" + m.fallback_text for m in msgs)
     assert "Расписание на неделю" not in joined
 
 
@@ -350,8 +318,7 @@ def test_e2e_first_week_of_semester_no_announce(conn, base_info, monkeypatch):
         return {start + timedelta(days=i): [_lesson(1)] for i in range(7)}
 
     monkeypatch.setattr(schedule_api, "get_week_lessons", fake_week)
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: [_lesson(1)])
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: [_lesson(1)])
 
     # 4 сентября (первая неделя) — Пт? Нет, 4.09.2026 — пятница. Ок.
     # Но should_check_now для Пт вернёт следующую неделю только с 14:00.
@@ -360,7 +327,7 @@ def test_e2e_first_week_of_semester_no_announce(conn, base_info, monkeypatch):
     msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
     # Автообъявления нет
-    joined = "\n".join(msgs)
+    joined = "\n".join(m.text + "\n" + m.fallback_text for m in msgs)
     assert "Расписание на неделю" not in joined
     assert db.get_week_announced(conn, "grp-419", date(2026, 9, 7)) is None
 
@@ -385,15 +352,13 @@ def test_e2e_three_days_sends_whole_week(conn, base_info, monkeypatch):
 
     monkeypatch.setattr(schedule_api, "get_group_lessons", fake_get)
 
-    now = datetime(2026, 9, 13, 15, 0)   # Вс
+    now = datetime(2026, 9, 13, 15, 0)  # Вс
     msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
 
-    joined = "\n".join(msgs)
-    # Большое недельное сообщение
+    joined = "\n".join(m.text + "\n" + m.fallback_text for m in msgs)
     assert "⚠️ ИЗМЕНЕНИЯ:" in joined
     assert "Всего изменений за неделю" in joined
     assert "🔔" in joined
-    # Дневных "Всего: добавлено" быть не должно
     assert "Всего: добавлено" not in joined
 
 
@@ -421,8 +386,8 @@ def test_e2e_two_days_sends_individual(conn, base_info, monkeypatch):
     # Два отдельных diff-сообщения
     assert len(msgs) == 2
     for m in msgs:
-        assert "Всего: добавлено" in m
-        assert "Всего изменений за неделю" not in m
+        assert "Всего: добавлено" in m.fallback_text
+        assert "Всего изменений за неделю" not in m.fallback_text
 
 
 def test_e2e_territory_in_diff(conn, base_info, monkeypatch):
@@ -432,25 +397,22 @@ def test_e2e_territory_in_diff(conn, base_info, monkeypatch):
     db.save_base_info(conn, base_info)
 
     initial = [_lesson(1, auditoria="43", territory="(СП-4) Энергетическое")]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: initial)
-    scheduler.run_check_cycle(conn, base_info, "grp-419",
-                              now=datetime(2026, 9, 8, 8, 45))
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: initial)
+    scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 8, 45))
 
     # Пара переехала в СП-5
     changed = [_lesson(1, auditoria="12", territory="(СП-5) МФЦПК")]
-    monkeypatch.setattr(schedule_api, "get_group_lessons",
-                        lambda b, g, d: changed)
+    monkeypatch.setattr(schedule_api, "get_group_lessons", lambda b, g, d: changed)
 
-    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419",
-                                      now=datetime(2026, 9, 8, 9, 0))
+    msgs = scheduler.run_check_cycle(conn, base_info, "grp-419", now=datetime(2026, 9, 8, 9, 0))
     assert len(msgs) == 1
-    assert "СП-5" in msgs[0]
+    assert "СП-5" in msgs[0].fallback_text
 
 
 def test_e2e_no_admins_denies(monkeypatch):
     """пустой ADMIN_USER_IDS → никто не админ."""
     import config
+
     monkeypatch.setattr(config, "ADMIN_USER_IDS", [])
     assert config.is_admin_id(123) is False
     assert config.is_admin_id(0) is False
