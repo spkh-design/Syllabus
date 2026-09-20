@@ -18,18 +18,31 @@ from formatter import (
     split_message,
 )
 
-
 # ---------- Хелперы ----------
 
-def L(number, subgroup=0, discipline="Дисциплина", teacher="Преподаватель",
-      auditoria="43", lesson_type="Лекция", territory="",):
+
+def L(
+    number,
+    subgroup=0,
+    discipline="Дисциплина",
+    teacher="Преподаватель",
+    auditoria="43",
+    lesson_type="Лекция",
+    territory="",
+):
     return {
-        "number": number, "subgroup": subgroup, "discipline": discipline,
-        "teacher": teacher, "auditoria": auditoria, "lesson_type": lesson_type, "territory": territory,
+        "number": number,
+        "subgroup": subgroup,
+        "discipline": discipline,
+        "teacher": teacher,
+        "auditoria": auditoria,
+        "lesson_type": lesson_type,
+        "territory": territory,
     }
 
 
 # ---------- format_day_schedule ----------
+
 
 def test_day_schedule_empty():
     text = format_day_schedule(date(2026, 9, 12), [])
@@ -95,22 +108,21 @@ def test_day_schedule_includes_weekday_name():
 
 # ---------- format_week_schedule ----------
 
+
 def test_week_schedule_empty_days():
-    """Пустые дни должны быть отмечены."""
+    """Пустые дни должны быть отмечены (Пн–Сб)."""
     start = date(2026, 9, 7)  # понедельник
     week = {start + timedelta(days=i): [] for i in range(7)}
     text = format_week_schedule(start, week)
     assert "07.09" in text
-    assert "13.09" in text
-    assert text.count("пар нет") == 7
+    assert "12.09" in text
+    assert "13.09" not in text
+    assert text.count("пар нет") == 6
 
 
 def test_week_schedule_with_lessons():
     start = date(2026, 9, 7)
-    week = {
-        start: [L(1, discipline="Математика")],
-        start + timedelta(days=1): [L(1, discipline="Русский")],
-    }
+    week = {start: [L(1, discipline="Математика")], start + timedelta(days=1): [L(1, discipline="Русский")]}
     for i in range(2, 7):
         week[start + timedelta(days=i)] = []
 
@@ -126,10 +138,12 @@ def test_week_schedule_header_has_range():
     week = {start + timedelta(days=i): [] for i in range(7)}
     text = format_week_schedule(start, week)
     assert "07.09.2026" in text
-    assert "13.09.2026" in text
+    assert "12.09.2026" in text
+    assert "13.09.2026" not in text
 
 
 # ---------- format_changes ----------
+
 
 def test_format_changes_empty():
     text = format_changes(date(2026, 9, 8), [], [])
@@ -169,6 +183,7 @@ def test_format_changes_no_group_in_header():
 
 # ---------- format_day_changes_full ----------
 
+
 def test_format_full_changes_empty_new():
     """Все пары отменили."""
     changes = [Change("remove", i, 0, L(i)) for i in range(1, 4)]
@@ -179,10 +194,7 @@ def test_format_full_changes_empty_new():
 
 def test_format_full_changes_with_lessons():
     """Показали 3 пары и итог."""
-    changes = [
-        Change("modify", i, 0, L(i), {"auditoria": ("43", "Дистант")})
-        for i in range(1, 4)
-    ]
+    changes = [Change("modify", i, 0, L(i), {"auditoria": ("43", "Дистант")}) for i in range(1, 4)]
     new = [L(i, auditoria="Дистант") for i in range(1, 4)]
     text = format_day_changes_full(date(2026, 9, 8), changes, new)
     assert "ИЗМЕНЕНИЯ" in text
@@ -202,6 +214,7 @@ def test_format_full_changes_summary_format():
 
 
 # ---------- split_message ----------
+
 
 def test_split_message_short():
     text = "коротко"
@@ -261,21 +274,22 @@ def test_day_schedule_omits_home_territory():
 
 # ---------- format_week_changes_full ----------
 
+
 def test_week_changes_full_empty_week():
     """Пустая неделя — только заголовок и итог."""
     start = date(2026, 9, 14)
-    week = {start + timedelta(days=i): [] for i in range(7)}
+    week = {start + timedelta(days=i): [] for i in range(6)}
     text = format_week_changes_full(start, {}, week)
-    assert "⚠️ ИЗМЕНЕНИЯ: 14.09–20.09" in text
+    assert "⚠️ ИЗМЕНЕНИЯ: 14.09–19.09" in text
     assert "Всего изменений за неделю: 0" in text
 
 
 def test_week_changes_full_header_range():
     """Заголовок — dd.mm–dd.mm от понедельника до воскресенья."""
     start = date(2026, 9, 14)
-    week = {start + timedelta(days=i): [] for i in range(7)}
+    week = {start + timedelta(days=i): [] for i in range(6)}
     text = format_week_changes_full(start, {}, week)
-    assert text.startswith("⚠️ ИЗМЕНЕНИЯ: 14.09–20.09")
+    assert text.startswith("⚠️ ИЗМЕНЕНИЯ: 14.09–19.09")
 
 
 def test_week_changes_full_marks_changed_lessons():
@@ -290,10 +304,7 @@ def test_week_changes_full_marks_changed_lessons():
         start + timedelta(days=5): [],
         start + timedelta(days=6): [],
     }
-    changes = {
-        start: [Change("modify", 1, 0, L(1, teacher="Смирнов"),
-                       {"teacher": ("Иванов", "Смирнов")})],
-    }
+    changes = {start: [Change("modify", 1, 0, L(1, teacher="Смирнов"), {"teacher": ("Иванов", "Смирнов")})]}
     text = format_week_changes_full(start, changes, week)
 
     # Маркер должен быть только у пары 1 понедельника
@@ -307,16 +318,14 @@ def test_week_changes_full_day_header_marker():
     """День с изменениями — маркер в заголовке дня."""
     start = date(2026, 9, 14)
     week = {start + timedelta(days=i): [L(1)] for i in range(7)}
-    changes = {
-        start: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})],
-    }
+    changes = {start: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})]}
     text = format_week_changes_full(start, changes, week)
     assert "— 14.09 (Пн) 🔔 —" in text
     assert "— 15.09 (Вт) —" in text
 
 
 def test_week_changes_full_shows_all_days():
-    """Все 7 дней, включая пустые, отображаются."""
+    """Все 6 дней (Пн–Сб), включая пустые, отображаются."""
     start = date(2026, 9, 14)
     week = {
         start: [L(1)],
@@ -328,8 +337,9 @@ def test_week_changes_full_shows_all_days():
         start + timedelta(days=6): [],
     }
     text = format_week_changes_full(start, {}, week)
-    for d in ("14.09", "15.09", "16.09", "17.09", "18.09", "19.09", "20.09"):
+    for d in ("14.09", "15.09", "16.09", "17.09", "18.09", "19.09"):
         assert d in text
+    assert "20.09" not in text  # воскресенье не показываем
 
 
 def test_week_changes_full_summary():
@@ -341,10 +351,7 @@ def test_week_changes_full_summary():
 
     changes = {
         start: [Change("modify", 1, 0, L(1), {"teacher": ("A", "B")})],
-        start + timedelta(days=1): [
-            Change("add", 2, 0, L(2)),
-            Change("remove", 3, 0, L(3)),
-        ],
+        start + timedelta(days=1): [Change("add", 2, 0, L(2)), Change("remove", 3, 0, L(3))],
         start + timedelta(days=2): [Change("modify", 1, 0, L(1), {"auditoria": ("1", "2")})],
     }
     text = format_week_changes_full(start, changes, week)
@@ -364,14 +371,12 @@ def test_week_changes_full_uses_home_territory():
         start + timedelta(days=5): [],
         start + timedelta(days=6): [],
     }
-    text = format_week_changes_full(
-        start, {}, week,
-        home_territory="(СП-4) Энергетическое отделение",
-    )
+    text = format_week_changes_full(start, {}, week, home_territory="(СП-4) Энергетическое отделение")
     assert "СП-5" in text
 
 
 # ---------- format_day_changes_full с маркером ----------
+
 
 def test_day_changes_full_marks_changed_lessons():
     """В format_day_changes_full изменившиеся пары помечены 🔔."""
