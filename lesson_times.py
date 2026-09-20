@@ -20,24 +20,13 @@ from typing import Optional
 _BASE_DATE = datetime(2000, 1, 1, 0, 0)
 
 # Длительности пар (минуты)
-_LESSON_DURATION = {
-    0: 80,  # Пн
-    1: 80, 2: 80, 3: 80, 4: 80,  # Вт–Пт
-    5: 60,  # Сб
-}
+_LESSON_DURATION = {0: 80, 1: 80, 2: 80, 3: 80, 4: 80, 5: 60}  # Пн  # Вт–Пт  # Сб
 
 # Время начала 1-й пары
-_FIRST_LESSON_START = {
-    0: (9, 0),   # Пн
-    1: (8, 30), 2: (8, 30), 3: (8, 30), 4: (8, 30),  # Вт–Пт
-    5: (8, 30),  # Сб
-}
+_FIRST_LESSON_START = {0: (9, 0), 1: (8, 30), 2: (8, 30), 3: (8, 30), 4: (8, 30), 5: (8, 30)}  # Пн  # Вт–Пт  # Сб
 
 # Обеденный перерыв после 3-й пары (минуты), 0 — обеда нет
-_LUNCH_BREAK = {
-    0: 50, 1: 50, 2: 50, 3: 50, 4: 50,  # Пн–Пт
-    5: 0,   # Сб — обеда нет
-}
+_LUNCH_BREAK = {0: 50, 1: 50, 2: 50, 3: 50, 4: 50, 5: 0}  # Пн–Пт  # Сб — обеда нет
 
 # Обычный перерыв между парами
 _REGULAR_BREAK = 10
@@ -93,5 +82,4 @@ def get_day_schedule_times(weekday: int) -> dict[int, str]:
     """
     if not is_lesson_day(weekday):
         return {}
-    return {n: get_lesson_time(weekday, n) for n in range(1, MAX_LESSON + 1)
-            if get_lesson_time(weekday, n) is not None}
+    return {n: get_lesson_time(weekday, n) for n in range(1, MAX_LESSON + 1) if get_lesson_time(weekday, n) is not None}

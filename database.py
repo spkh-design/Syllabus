@@ -89,6 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_lookup
 
 # ---------- Инициализация ----------
 
+
 def init_db(path: str | Path = "bot.db") -> sqlite3.Connection:
     """Открывает/создаёт БД и применяет схему.
 
@@ -111,6 +112,7 @@ def init_db(path: str | Path = "bot.db") -> sqlite3.Connection:
 
 # ---------- Утилиты ----------
 
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -124,25 +126,21 @@ def _date_key(d: date_type | str) -> str:
 
 # ---------- Настройки ----------
 
+
 def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
     """Сохраняет настройку. Значение всегда сериализуется в JSON."""
     payload = json.dumps(value, ensure_ascii=False)
     with _write_lock:
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "INSERT INTO settings (key, value) VALUES (?, ?) " "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, payload),
         )
         conn.commit()
 
 
-def get_setting(
-    conn: sqlite3.Connection, key: str, default: Any = None,
-) -> Any:
+def get_setting(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
     """Возвращает настройку или default. Значение парсится из JSON."""
-    row = conn.execute(
-        "SELECT value FROM settings WHERE key = ?", (key,),
-    ).fetchone()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     if row is None:
         return default
     try:
@@ -169,19 +167,16 @@ def delete_setting(conn: sqlite3.Connection, key: str) -> None:
 
 # ---------- Снимки расписания ----------
 
+
 def _lessons_hash(lessons: list[dict]) -> str:
     """Стабильный хеш снимка — сортируем ключи, JSON без пробелов."""
     import hashlib
+
     normalized = json.dumps(lessons, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def save_snapshot(
-    conn: sqlite3.Connection,
-    group_uuid: str,
-    day: date_type | str,
-    lessons: list[dict],
-) -> str:
+def save_snapshot(conn: sqlite3.Connection, group_uuid: str, day: date_type | str, lessons: list[dict]) -> str:
     """Сохраняет снимок. Возвращает хеш."""
     key = _date_key(day)
     payload = json.dumps(lessons, ensure_ascii=False, sort_keys=True)
@@ -201,18 +196,14 @@ def save_snapshot(
     return h
 
 
-def get_snapshot(
-    conn: sqlite3.Connection, group_uuid: str, day: date_type | str,
-) -> Optional[dict]:
+def get_snapshot(conn: sqlite3.Connection, group_uuid: str, day: date_type | str) -> Optional[dict]:
     """Возвращает снимок или None.
 
     Формат: {"hash": str, "lessons": list[dict], "updated_at": str}
     """
     key = _date_key(day)
     row = conn.execute(
-        "SELECT hash, lessons, updated_at FROM snapshots "
-        "WHERE group_uuid = ? AND date = ?",
-        (group_uuid, key),
+        "SELECT hash, lessons, updated_at FROM snapshots " "WHERE group_uuid = ? AND date = ?", (group_uuid, key)
     ).fetchone()
     if row is None:
         return None
@@ -221,46 +212,29 @@ def get_snapshot(
     except ValueError:
         logger.error("Не удалось распарсить снимок %s / %s", group_uuid, key)
         return None
-    return {
-        "hash": row["hash"],
-        "lessons": lessons,
-        "updated_at": row["updated_at"],
-    }
+    return {"hash": row["hash"], "lessons": lessons, "updated_at": row["updated_at"]}
 
 
-def delete_snapshot(
-    conn: sqlite3.Connection, group_uuid: str, day: date_type | str,
-) -> None:
+def delete_snapshot(conn: sqlite3.Connection, group_uuid: str, day: date_type | str) -> None:
     key = _date_key(day)
     with _write_lock:
-        conn.execute(
-            "DELETE FROM snapshots WHERE group_uuid = ? AND date = ?",
-            (group_uuid, key),
-        )
+        conn.execute("DELETE FROM snapshots WHERE group_uuid = ? AND date = ?", (group_uuid, key))
         conn.commit()
 
 
-def cleanup_old_snapshots(
-    conn: sqlite3.Connection, keep_days: int = 30,
-) -> int:
+def cleanup_old_snapshots(conn: sqlite3.Connection, keep_days: int = 30) -> int:
     """Удаляет снимки старше keep_days. Возвращает число удалённых."""
     threshold = (datetime.now() - timedelta(days=keep_days)).date().isoformat()
     with _write_lock:
-        cur = conn.execute(
-            "DELETE FROM snapshots WHERE date < ?", (threshold,),
-        )
+        cur = conn.execute("DELETE FROM snapshots WHERE date < ?", (threshold,))
         conn.commit()
     return cur.rowcount
 
 
 # ---------- Объявленные недели ----------
 
-def set_week_announced(
-    conn: sqlite3.Connection,
-    group_uuid: str,
-    week_start: date_type | str,
-    is_full: bool,
-) -> None:
+
+def set_week_announced(conn: sqlite3.Connection, group_uuid: str, week_start: date_type | str, is_full: bool) -> None:
     """Ставит флаг «неделя объявлена» для группы.
 
     Args:
@@ -283,31 +257,23 @@ def set_week_announced(
         conn.commit()
 
 
-def get_week_announced(
-    conn: sqlite3.Connection, group_uuid: str, week_start: date_type | str,
-) -> Optional[dict]:
+def get_week_announced(conn: sqlite3.Connection, group_uuid: str, week_start: date_type | str) -> Optional[dict]:
     """Возвращает запись о неделе или None.
 
     Формат: {"announced_at": str, "is_full": bool}
     """
     key = _date_key(week_start)
     row = conn.execute(
-        "SELECT announced_at, is_full FROM announced_weeks "
-        "WHERE group_uuid = ? AND week_start = ?",
+        "SELECT announced_at, is_full FROM announced_weeks " "WHERE group_uuid = ? AND week_start = ?",
         (group_uuid, key),
     ).fetchone()
     if row is None:
         return None
-    return {
-        "announced_at": row["announced_at"],
-        "is_full": bool(row["is_full"]),
-    }
+    return {"announced_at": row["announced_at"], "is_full": bool(row["is_full"])}
 
 
 def clear_week_announced(
-    conn: sqlite3.Connection,
-    group_uuid: str,
-    week_start: Optional[date_type | str] = None,
+    conn: sqlite3.Connection, group_uuid: str, week_start: Optional[date_type | str] = None
 ) -> int:
     """Удаляет записи о неделях.
 
@@ -318,38 +284,30 @@ def clear_week_announced(
     """
     with _write_lock:
         if week_start is None:
-            cur = conn.execute(
-                "DELETE FROM announced_weeks WHERE group_uuid = ?",
-                (group_uuid,),
-            )
+            cur = conn.execute("DELETE FROM announced_weeks WHERE group_uuid = ?", (group_uuid,))
         else:
             key = _date_key(week_start)
             cur = conn.execute(
-                "DELETE FROM announced_weeks "
-                "WHERE group_uuid = ? AND week_start = ?",
-                (group_uuid, key),
+                "DELETE FROM announced_weeks " "WHERE group_uuid = ? AND week_start = ?", (group_uuid, key)
             )
         conn.commit()
     return cur.rowcount
 
 
-def cleanup_old_announced_weeks(
-    conn: sqlite3.Connection, keep_days: int = 30,
-) -> int:
+def cleanup_old_announced_weeks(conn: sqlite3.Connection, keep_days: int = 30) -> int:
     """Удаляет записи о неделях, чей week_start старше keep_days.
 
     Логика: если неделя закончилась больше keep_days назад, она не нужна.
     """
     threshold = (datetime.now() - timedelta(days=keep_days)).date().isoformat()
     with _write_lock:
-        cur = conn.execute(
-            "DELETE FROM announced_weeks WHERE week_start < ?", (threshold,),
-        )
+        cur = conn.execute("DELETE FROM announced_weeks WHERE week_start < ?", (threshold,))
         conn.commit()
     return cur.rowcount
 
 
 # ---------- Кэш справочников ----------
+
 
 def save_base_info(conn: sqlite3.Connection, data: dict) -> None:
     payload = json.dumps(data, ensure_ascii=False)
@@ -366,9 +324,7 @@ def save_base_info(conn: sqlite3.Connection, data: dict) -> None:
 
 
 def get_base_info(conn: sqlite3.Connection) -> Optional[dict]:
-    row = conn.execute(
-        "SELECT data FROM base_info_cache WHERE id = 1",
-    ).fetchone()
+    row = conn.execute("SELECT data FROM base_info_cache WHERE id = 1").fetchone()
     if row is None:
         return None
     try:
@@ -379,9 +335,7 @@ def get_base_info(conn: sqlite3.Connection) -> Optional[dict]:
 
 def base_info_age_hours(conn: sqlite3.Connection) -> Optional[float]:
     """Сколько часов назад обновляли справочники. None если их нет."""
-    row = conn.execute(
-        "SELECT updated_at FROM base_info_cache WHERE id = 1",
-    ).fetchone()
+    row = conn.execute("SELECT updated_at FROM base_info_cache WHERE id = 1").fetchone()
     if row is None:
         return None
     try:
@@ -393,29 +347,20 @@ def base_info_age_hours(conn: sqlite3.Connection) -> Optional[float]:
 
 # ---------- Лог уведомлений ----------
 
-def log_notification(
-    conn: sqlite3.Connection,
-    group_uuid: str,
-    day: date_type | str,
-    kind: str,
-    payload: Any,
-) -> None:
+
+def log_notification(conn: sqlite3.Connection, group_uuid: str, day: date_type | str, kind: str, payload: Any) -> None:
     key = _date_key(day)
     if not isinstance(payload, str):
         payload = json.dumps(payload, ensure_ascii=False)
     with _write_lock:
         conn.execute(
-            "INSERT INTO notifications_log "
-            "(group_uuid, date, kind, payload, sent_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO notifications_log " "(group_uuid, date, kind, payload, sent_at) " "VALUES (?, ?, ?, ?, ?)",
             (group_uuid, key, kind, payload, _now()),
         )
         conn.commit()
 
 
-def last_notification(
-    conn: sqlite3.Connection, group_uuid: str, day: date_type | str,
-) -> Optional[dict]:
+def last_notification(conn: sqlite3.Connection, group_uuid: str, day: date_type | str) -> Optional[dict]:
     """Последнее уведомление по (группа, дата) или None."""
     key = _date_key(day)
     row = conn.execute(
@@ -426,8 +371,4 @@ def last_notification(
     ).fetchone()
     if row is None:
         return None
-    return {
-        "kind": row["kind"],
-        "payload": row["payload"],
-        "sent_at": row["sent_at"],
-    }
+    return {"kind": row["kind"], "payload": row["payload"], "sent_at": row["sent_at"]}

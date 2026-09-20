@@ -18,12 +18,7 @@ from typing import Optional
 
 import database as db
 import schedule_api
-from comparator import (
-    Change,
-    count_changed_days,
-    diff_lessons,
-    is_massive_change,
-)
+from comparator import Change, count_changed_days, diff_lessons, is_massive_change
 from formatter import (
     format_changes,
     format_day_changes_full,
@@ -55,6 +50,7 @@ MASSIVE_DAYS_FOR_WEEK = 3
 
 
 # ---------- Логика времени ----------
+
 
 def _in_time_window(now: time, start: time, end: time) -> bool:
     """Проверяет, попадает ли now в [start, end]."""
@@ -120,8 +116,7 @@ def should_check_now(now: datetime) -> set[date_type]:
 
 def _is_sunday_after_13(now: datetime) -> bool:
     """True, если сейчас воскресенье и время >= 13:00."""
-    return (now.date().weekday() == 6
-            and now.time() >= SUNDAY_INCOMPLETE_SEND_TIME)
+    return now.date().weekday() == 6 and now.time() >= SUNDAY_INCOMPLETE_SEND_TIME
 
 
 def _is_first_week_of_semester(today: date_type) -> bool:
@@ -137,9 +132,7 @@ def _is_first_week_of_semester(today: date_type) -> bool:
     return False
 
 
-def _split_dates_by_week(
-    dates: set[date_type], today: date_type,
-) -> tuple[set[date_type], set[date_type]]:
+def _split_dates_by_week(dates: set[date_type], today: date_type) -> tuple[set[date_type], set[date_type]]:
     """Разделяет даты на «текущая неделя» и «следующая неделя».
 
     Returns:
@@ -162,9 +155,7 @@ def _is_week_complete(week: dict[date_type, list[dict]]) -> bool:
     return days_with_lessons >= WEEK_COMPLETE_MIN_DAYS
 
 
-def _day_lessons_passed(
-    day: date_type, last_lesson_number: int, now: datetime,
-) -> bool:
+def _day_lessons_passed(day: date_type, last_lesson_number: int, now: datetime) -> bool:
     """True, если все пары дня уже прошли."""
     if last_lesson_number <= 0:
         return True
@@ -178,9 +169,8 @@ def _day_lessons_passed(
 
 # ---------- Справочники ----------
 
-def refresh_base_info_if_needed(
-    conn, current_base: Optional[dict] = None,
-) -> Optional[dict]:
+
+def refresh_base_info_if_needed(conn, current_base: Optional[dict] = None) -> Optional[dict]:
     """Обновляет справочники, если они устарели или их нет."""
     age = db.base_info_age_hours(conn)
     if current_base is not None and age is not None and age < BASE_INFO_TTL_HOURS:
@@ -199,6 +189,7 @@ def refresh_base_info_if_needed(
 
 # ---------- Метрики ----------
 
+
 def _increment_metric(conn, key: str, value=None) -> None:
     """Инкрементирует счётчик (или устанавливает значение)."""
     if value is not None:
@@ -210,8 +201,12 @@ def _increment_metric(conn, key: str, value=None) -> None:
 
 # ---------- Проверка одной даты ----------
 
+
 def check_group(
-    conn, base: dict, group_uuid: str, target_date: date_type,
+    conn,
+    base: dict,
+    group_uuid: str,
+    target_date: date_type,
     *,
     now: Optional[datetime] = None,
     skip_if_passed_today: bool = True,
@@ -235,8 +230,7 @@ def check_group(
     if old_snapshot is None:
         if new_lessons:
             db.save_snapshot(conn, group_uuid, target_date, new_lessons)
-            logger.info("Первичный снимок %s на %s сохранён",
-                        group_uuid, target_date)
+            logger.info("Первичный снимок %s на %s сохранён", group_uuid, target_date)
         return None
 
     old_lessons = old_snapshot["lessons"]
@@ -255,14 +249,11 @@ def check_group(
     db.save_snapshot(conn, group_uuid, target_date, new_lessons)
 
     # Не отправлять изменения на сегодня, если все пары уже прошли
-    if (skip_if_passed_today and now is not None
-            and target_date == now.date()):
+    if skip_if_passed_today and now is not None and target_date == now.date():
         last_number = max((l["number"] for l in new_lessons), default=0)
         if _day_lessons_passed(target_date, last_number, now):
-            logger.info("Изменения на %s, но все пары уже прошли — "
-                        "уведомление не отправляется", target_date)
-            db.log_notification(conn, group_uuid, target_date,
-                                "skipped_passed", "")
+            logger.info("Изменения на %s, но все пары уже прошли — " "уведомление не отправляется", target_date)
+            db.log_notification(conn, group_uuid, target_date, "skipped_passed", "")
             return None
 
     total = max(len(old_lessons), len(new_lessons), 1)
@@ -281,16 +272,16 @@ def check_group(
 def _hash(lessons: list[dict]) -> str:
     """Стабильный хеш (совпадает с database.save_snapshot)."""
     import hashlib, json
+
     normalized = json.dumps(lessons, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 # ---------- Объявление недели ----------
 
+
 def _maybe_announce_week(
-    conn, base: dict, group_uuid: str,
-    week_start: date_type, week: dict[date_type, list[dict]],
-    now: datetime,
+    conn, base: dict, group_uuid: str, week_start: date_type, week: dict[date_type, list[dict]], now: datetime
 ) -> Optional[str]:
     """Проверяет, надо ли объявить неделю. Если да — возвращает текст.
 
@@ -313,8 +304,7 @@ def _maybe_announce_week(
     is_sunday = _is_sunday_after_13(now)
 
     if not complete and not is_sunday:
-        logger.debug("Неделя %s неполная, но ещё не воскресенье 13:00 — ждём",
-                     week_start)
+        logger.debug("Неделя %s неполная, но ещё не воскресенье 13:00 — ждём", week_start)
         return None
 
     home = schedule_api.home_territory(base, group_uuid)
@@ -324,17 +314,14 @@ def _maybe_announce_week(
     kind = "week_full" if complete else "week_partial"
     db.log_notification(conn, group_uuid, week_start, kind, text[:500])
 
-    logger.info("Объявлена неделя %s (%s)",
-                week_start, "полная" if complete else "неполная")
+    logger.info("Объявлена неделя %s (%s)", week_start, "полная" if complete else "неполная")
     return text
 
 
 # ---------- Полный цикл ----------
 
-def run_check_cycle(
-    conn, base: Optional[dict], group_uuid: str,
-    now: Optional[datetime] = None,
-) -> list[str]:
+
+def run_check_cycle(conn, base: Optional[dict], group_uuid: str, now: Optional[datetime] = None) -> list[str]:
     """Полный цикл: определить, что проверять, проверить, вернуть тексты.
 
     Алгоритм:
@@ -361,8 +348,7 @@ def run_check_cycle(
         logger.debug("Сейчас ничего проверять не нужно")
         return []
 
-    logger.info("Проверяем %d дат(ы): %s",
-                len(dates), sorted(d.isoformat() for d in dates))
+    logger.info("Проверяем %d дат(ы): %s", len(dates), sorted(d.isoformat() for d in dates))
 
     today = now.date()
     current_dates, next_dates = _split_dates_by_week(dates, today)
@@ -376,9 +362,7 @@ def run_check_cycle(
         week = schedule_api.get_week_lessons(base, group_uuid, week_start)
         week_cache[week_start] = week
 
-        announce_text = _maybe_announce_week(
-            conn, base, group_uuid, week_start, week, now,
-        )
+        announce_text = _maybe_announce_week(conn, base, group_uuid, week_start, week, now)
         if announce_text:
             messages.extend(split_message(announce_text))
 
@@ -389,35 +373,31 @@ def run_check_cycle(
     day_messages: dict[date_type, str] = {}
 
     for d in sorted(current_dates | next_dates):
-        result = check_group(
-            conn, base, group_uuid, d,
-            now=now, skip_if_passed_today=True,
-        )
+        result = check_group(conn, base, group_uuid, d, now=now, skip_if_passed_today=True)
         if result is None:
             continue
         kind, text, changes = result
-        logger.info("Изменения на %s (%s, %d изменений)",
-                    d, kind, len(changes))
+        logger.info("Изменения на %s (%s, %d изменений)", d, kind, len(changes))
         changes_by_day[d] = changes
         day_messages[d] = text
 
     # --- 3. Группируем по неделям и решаем, что отправлять ---
     # Текущая неделя
-    _process_week_messages(
-        messages, changes_by_day, day_messages,
-        current_dates, base, group_uuid,
-    )
+    _process_week_messages(messages, changes_by_day, day_messages, current_dates, base, group_uuid)
     # Следующая неделя
     _process_week_messages(
-        messages, changes_by_day, day_messages,
-        next_dates, base, group_uuid,
+        messages,
+        changes_by_day,
+        day_messages,
+        next_dates,
+        base,
+        group_uuid,
         week_start=(min(next_dates) if next_dates else None),
         week_cache=week_cache,
     )
 
     _increment_metric(conn, "metrics_checks")
-    _increment_metric(conn, "metrics_last_check",
-                      value=datetime.now().isoformat())
+    _increment_metric(conn, "metrics_last_check", value=datetime.now().isoformat())
     for _ in messages:
         _increment_metric(conn, "metrics_notifications")
 
@@ -442,10 +422,7 @@ def _process_week_messages(
     изменившийся день.
     """
     # Оставляем только даты этой недели
-    relevant_changes = {
-        d: changes for d, changes in changes_by_day.items()
-        if d in week_dates
-    }
+    relevant_changes = {d: changes for d, changes in changes_by_day.items() if d in week_dates}
 
     if not relevant_changes:
         return
@@ -459,8 +436,7 @@ def _process_week_messages(
 
         home = schedule_api.home_territory(base, group_uuid)
         text = format_week_changes_full(start, relevant_changes, week, home)
-        logger.info("Массовые изменения (%d дней) — шлём всю неделю с %s",
-                    count_changed_days(relevant_changes), start)
+        logger.info("Массовые изменения (%d дней) — шлём всю неделю с %s", count_changed_days(relevant_changes), start)
         messages.extend(split_message(text))
         return
 

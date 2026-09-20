@@ -16,12 +16,7 @@ from vkbottle.bot import Bot, Message
 
 import database as db
 import scheduler
-from config import (
-    VK_TOKEN,
-    CHECK_INTERVAL_MINUTES,
-    DB_PATH,
-    ADMIN_PEER_ID,
-)
+from config import VK_TOKEN, CHECK_INTERVAL_MINUTES, DB_PATH, ADMIN_PEER_ID
 from handlers import (
     cmd_group,
     cmd_interval,
@@ -40,10 +35,7 @@ from handlers import (
     cmd_whoami,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 # Глобальное соединение с БД (vkbottle + asyncio + sqlite)
@@ -57,6 +49,7 @@ bot = Bot(token=VK_TOKEN)
 
 
 # ---------- Обработчики команд ----------
+
 
 @bot.on.message(text=["/start", "/help", "начать", "start"])
 async def on_start(message: Message):
@@ -147,18 +140,13 @@ async def on_unknown(message: Message):
     text = (message.text or "").strip()
     if not text.startswith("/"):
         return
-    await message.answer(
-        "🤔 Не понимаю команду.\n"
-        "Напишите /help, чтобы увидеть список."
-    )
+    await message.answer("🤔 Не понимаю команду.\n" "Напишите /help, чтобы увидеть список.")
+
 
 # ---------- Фоновый цикл проверки ----------
 
-async def send_startup_greeting(
-    conn,
-    admin_peer_id: int | None = ADMIN_PEER_ID,
-    send_func=None,
-) -> None:
+
+async def send_startup_greeting(conn, admin_peer_id: int | None = ADMIN_PEER_ID, send_func=None) -> None:
     """Отправляет приветствие при первом запуске (БД пустая).
 
     Args:
@@ -204,45 +192,33 @@ async def background_checker():
         try:
             group_uuid = db.get_setting(conn, "group_uuid")
             peer_id = db.get_setting(conn, "peer_id")
-            logger.info(">>> checker: group_uuid=%r, peer_id=%r",
-                        group_uuid, peer_id)
+            logger.info(">>> checker: group_uuid=%r, peer_id=%r", group_uuid, peer_id)
 
             if group_uuid and peer_id:
-                _base_cache = scheduler.refresh_base_info_if_needed(
-                    conn, _base_cache,
-                )
+                _base_cache = scheduler.refresh_base_info_if_needed(conn, _base_cache)
                 if _base_cache is None:
                     logger.warning("Справочники недоступны — пропуск цикла")
                 else:
-                    messages = scheduler.run_check_cycle(
-                        conn, _base_cache, str(group_uuid),
-                    )
-                    logger.info(">>> checker: получено %d сообщений",
-                                len(messages))
+                    messages = scheduler.run_check_cycle(conn, _base_cache, str(group_uuid))
+                    logger.info(">>> checker: получено %d сообщений", len(messages))
                     for text in messages:
                         try:
-                            await bot.api.messages.send(
-                                peer_id=int(peer_id),
-                                message=text,
-                                random_id=0,
-                            )
+                            await bot.api.messages.send(peer_id=int(peer_id), message=text, random_id=0)
                             await asyncio.sleep(0.5)
                         except Exception as e:
                             logger.error("Ошибка отправки: %s", e)
             else:
-                logger.warning(
-                    ">>> checker: нет настроек — group_uuid=%r, peer_id=%r",
-                    group_uuid, peer_id,
-                )
+                logger.warning(">>> checker: нет настроек — group_uuid=%r, peer_id=%r", group_uuid, peer_id)
         except Exception as e:
             logger.exception("Ошибка в фоновом цикле: %s", e)
 
-        interval = db.get_setting(conn, "check_interval_minutes",
-                                   CHECK_INTERVAL_MINUTES)
+        interval = db.get_setting(conn, "check_interval_minutes", CHECK_INTERVAL_MINUTES)
         logger.info(">>> checker: спим %s мин", interval)
         await asyncio.sleep(int(interval) * 60)
 
+
 # ---------- Точка входа ----------
+
 
 async def main():
     logger.info("Запуск бота...")
