@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS notifications_log (
     sent_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS week_images (
+    group_uuid TEXT NOT NULL,
+    week_start TEXT NOT NULL,
+    image      BLOB NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (group_uuid, week_start)
+);
+
 CREATE INDEX IF NOT EXISTS idx_notifications_lookup
     ON notifications_log (group_uuid, date, sent_at DESC);
 """
@@ -372,3 +380,51 @@ def last_notification(conn: sqlite3.Connection, group_uuid: str, day: date_type 
     if row is None:
         return None
     return {"kind": row["kind"], "payload": row["payload"], "sent_at": row["sent_at"]}
+
+
+# ---------- Изображения недели ----------
+
+
+def save_week_image(conn: sqlite3.Connection, group_uuid: str, week_start: date_type | str, image: bytes) -> None:
+    """Сохраняет PNG-картинку недели.
+
+    Перезаписывает существующую (не копим старые снимки одной недели).
+    """
+    key = _date_key(week_start)
+    with _write_lock:
+        conn.execute(
+            "INSERT INTO week_images (group_uuid, week_start, image, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(group_uuid, week_start) DO UPDATE SET "
+            "  image = excluded.image, "
+            "  updated_at = excluded.updated_at",
+            (group_uuid, key, image, _now()),
+        )
+        conn.commit()
+
+
+def get_week_image(conn: sqlite3.Connection, group_uuid: str, week_start: date_type | str) -> Optional[bytes]:
+    """Возвращает PNG-картинку недели или None."""
+    key = _date_key(week_start)
+    row = conn.execute(
+        "SELECT image FROM week_images WHERE group_uuid = ? AND week_start = ?", (group_uuid, key)
+    ).fetchone()
+    if row is None:
+        return None
+    return bytes(row["image"])
+
+
+def delete_week_image(conn: sqlite3.Connection, group_uuid: str, week_start: date_type | str) -> None:
+    key = _date_key(week_start)
+    with _write_lock:
+        conn.execute("DELETE FROM week_images WHERE group_uuid = ? AND week_start = ?", (group_uuid, key))
+        conn.commit()
+
+
+def cleanup_old_week_images(conn: sqlite3.Connection, keep_days: int = 30) -> int:
+    """Удаляет картинки недель, чей week_start старше keep_days."""
+    threshold = (datetime.now() - timedelta(days=keep_days)).date().isoformat()
+    with _write_lock:
+        cur = conn.execute("DELETE FROM week_images WHERE week_start < ?", (threshold,))
+        conn.commit()
+    return cur.rowcount

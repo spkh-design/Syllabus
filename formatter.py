@@ -90,8 +90,8 @@ def _format_day_header(d: date_type, *, prefix: str = "") -> str:
 
 
 def _format_week_header(start_date: date_type, *, prefix: str = "") -> str:
-    """Шапка недели: 'dd.mm–dd.mm' + опциональный префикс."""
-    end_date = start_date + timedelta(days=6)
+    """Шапка недели: 'dd.mm–dd.mm' (Пн–Сб) + опциональный префикс."""
+    end_date = start_date + timedelta(days=5)
     range_str = f"{start_date.strftime('%d.%m')}–" f"{end_date.strftime('%d.%m')}"
     if prefix:
         return f"{prefix} {range_str}"
@@ -111,15 +111,15 @@ def format_day_schedule(day: date_type, lessons: list[dict], home_territory: str
 
 
 def format_week_schedule(start_date: date_type, week: dict[date_type, list[dict]], home_territory: str = "") -> str:
-    """Расписание на неделю. Все 7 дней, включая пустые."""
+    """Расписание на неделю. Дни Пн–Сб (воскресенье не показываем)."""
     head = (
         f"📅 Расписание на неделю "
         f"с {start_date.strftime('%d.%m.%Y')} "
-        f"по {(start_date + timedelta(days=6)).strftime('%d.%m.%Y')}"
+        f"по {(start_date + timedelta(days=5)).strftime('%d.%m.%Y')}"
     )
     blocks = [head]
 
-    for offset in range(7):
+    for offset in range(6):  # Пн–Сб
         d = start_date + timedelta(days=offset)
         lessons = week.get(d, [])
         wd = _weekday_short(d)
@@ -193,38 +193,22 @@ def format_week_changes_full(
     week: dict[date_type, list[dict]],
     home_territory: str = "",
 ) -> str:
-    """Полное расписание недели с пометками изменившихся пар.
-
-    Используется, когда изменилось 3+ дня за неделю: показываем всю
-    неделю целиком, у изменившихся пар — маркер 🔔.
-
-    Args:
-        start_date:     понедельник недели.
-        changes_by_day: {дата: [Change, ...]} — только для изменившихся дней.
-                        Дни без изменений могут отсутствовать или быть [].
-        week:           {дата: [пара, ...]} — все 7 дней.
-        home_territory: название подразделения группы.
-
-    Returns:
-        Готовый текст.
-    """
+    """Полное расписание недели с пометками изменившихся пар (Пн–Сб)."""
     head = _format_week_header(start_date, prefix="⚠️ ИЗМЕНЕНИЯ:")
     blocks = [head, ""]
 
     total_changes = 0
     total_add = total_remove = total_modify = 0
 
-    for offset in range(7):
+    for offset in range(6):  # Пн–Сб
         d = start_date + timedelta(days=offset)
         wd = _weekday_short(d)
         lessons = week.get(d, [])
         day_changes = changes_by_day.get(d, [])
         day_changed = bool(day_changes)
 
-        # Собираем ключи изменившихся пар этого дня
         changed_keys = {(c.number, c.subgroup) for c in day_changes}
 
-        # Заголовок дня с маркером, если в этот день что-то изменилось
         day_mark = f" {CHANGE_MARKER}" if day_changed else ""
         blocks.append(f"— {d.strftime('%d.%m')} ({wd}){day_mark} —")
 
@@ -238,7 +222,6 @@ def format_week_changes_full(
             blocks.append(_format_lesson_line(lesson, d.weekday(), home_territory, changed=(key in changed_keys)))
         blocks.append("")
 
-        # Считаем статистику
         if day_changes:
             s = summarize_changes(day_changes)
             total_changes += len(day_changes)

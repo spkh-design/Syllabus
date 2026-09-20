@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import time
 import re
-from datetime import date as date_type, datetime, timedelta
+from datetime import date as date_type, datetime, timedelta, timezone
 from typing import Optional
 
 import requests
@@ -45,6 +45,19 @@ HEADERS = {
 TIMEOUT = 30  # секунд на один запрос
 MAX_RETRIES = 3  # попыток при 429/503/сетевых ошибках
 BACKOFF_BASE = 2  # 2, 4, 8 секунд между попытками
+
+try:
+    from zoneinfo import ZoneInfo
+
+    try:
+        SCHEDULE_TZ = ZoneInfo("Asia/Yekaterinburg")
+    except Exception:
+        # Windows без tzdata — используем фиксированное смещение.
+        # Екатеринбург = UTC+5 без DST (Россия отменила переходы в 2014).
+        SCHEDULE_TZ = timezone(timedelta(hours=5), name="Asia/Yekaterinburg")
+except ImportError:
+    # Совсем древний Python без zoneinfo
+    SCHEDULE_TZ = timezone(timedelta(hours=5), name="Asia/Yekaterinburg")
 
 
 class ScheduleAPIError(Exception):
@@ -108,7 +121,7 @@ def fetch_base_info() -> dict:
 
 def fetch_schedule(target_date: date_type) -> dict:
     """Загружает сырое расписание на дату."""
-    ts_ms = int(datetime(target_date.year, target_date.month, target_date.day).timestamp() * 1000)
+    ts_ms = int(datetime(target_date.year, target_date.month, target_date.day, tzinfo=SCHEDULE_TZ).timestamp() * 1000)
     payload = _request(SCHEDULE_ENDPOINT, params={"date": ts_ms})
     if not payload.get("success"):
         raise ScheduleAPIError(f"schedule: success=false на {target_date}")
@@ -209,7 +222,7 @@ def get_group_lessons(base: dict, group_uuid: str, target_date: date_type) -> li
     # API иногда возвращает весь период. Ищем нужный день по timestamp.
     day = None
     for d in days:
-        d_date = datetime.fromtimestamp(d["date"] / 1000).date()
+        d_date = datetime.fromtimestamp(d["date"] / 1000, tz=SCHEDULE_TZ).date()
         if d_date == target_date:
             day = d
             break

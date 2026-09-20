@@ -32,6 +32,9 @@ from datetime import date, datetime, timedelta
 
 from vkbottle.bot import Message
 
+from schedule_sender import send_schedule_message
+from scheduler import ScheduleMessage
+
 import database as db
 import schedule_api
 from config import is_admin_id
@@ -132,14 +135,6 @@ async def cmd_where(message: Message, conn) -> None:
     await message.answer(f"📍 Текущая настройка: {division} / {group_name}")
 
 
-async def cmd_today(message: Message, conn) -> None:
-    await _send_day(message, conn, date.today())
-
-
-async def cmd_tomorrow(message: Message, conn) -> None:
-    await _send_day(message, conn, date.today() + timedelta(days=1))
-
-
 async def _send_day(message: Message, conn, target: date) -> None:
     group_uuid = db.get_setting(conn, "group_uuid")
     if not group_uuid:
@@ -155,50 +150,70 @@ async def _send_day(message: Message, conn, target: date) -> None:
         lessons = schedule_api.get_group_lessons(base, group_uuid, target)
     except schedule_api.ScheduleAPIError as e:
         logger.error("Ошибка API: %s", e)
-        await message.answer("⚠️ Не удалось получить расписание. " "Попробуйте позже.")
+        await message.answer("⚠️ Не удалось получить расписание. Попробуйте позже.")
         return
 
     home = schedule_api.home_territory(base, group_uuid)
-    text = format_day_schedule(target, lessons, home)
-    await _reply(message, text)
+    weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][target.weekday()]
+    text = f"📅 Расписание на {target.strftime('%d.%m.%Y')} ({weekday})"
+
+    msg = ScheduleMessage(
+        kind="day_image",
+        text=text,
+        fallback_text=format_day_schedule(target, lessons, home),
+        target_date=target,
+        lessons=lessons,
+        home_territory=home,
+    )
+    await send_schedule_message(message.ctx_api, message.peer_id, msg, conn=conn, group_uuid=group_uuid)
+
+
+async def _send_week(message: Message, conn, monday: date) -> None:
+    group_uuid = db.get_setting(conn, "group_uuid")
+    if not group_uuid:
+        await message.answer("⚠️ Группа ещё не настроена.")
+        return
+
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники.")
+        return
+
+    week = schedule_api.get_week_lessons(base, group_uuid, monday)
+    home = schedule_api.home_territory(base, group_uuid)
+    text = (
+        f"📅 Расписание на неделю "
+        f"с {monday.strftime('%d.%m.%Y')} "
+        f"по {(monday + timedelta(days=5)).strftime('%d.%m.%Y')}"
+    )
+
+    msg = ScheduleMessage(
+        kind="week_image",
+        text=text,
+        fallback_text=format_week_schedule(monday, week, home),
+        week_start=monday,
+        week=week,
+        home_territory=home,
+    )
+    await send_schedule_message(message.ctx_api, message.peer_id, msg, conn=conn, group_uuid=group_uuid)
+
+
+async def cmd_today(message: Message, conn) -> None:
+    await _send_day(message, conn, date.today())
+
+
+async def cmd_tomorrow(message: Message, conn) -> None:
+    await _send_day(message, conn, date.today() + timedelta(days=1))
 
 
 async def cmd_week(message: Message, conn) -> None:
-    """Расписание на ТЕКУЩУЮ неделю (понедельник — воскресенье)."""
-    group_uuid = db.get_setting(conn, "group_uuid")
-    if not group_uuid:
-        await message.answer("⚠️ Группа ещё не настроена.")
-        return
-
-    base = _load_base(conn)
-    if base is None:
-        await message.answer("⚠️ Не удалось получить справочники.")
-        return
-
     monday = _current_monday(date.today())
-    week = schedule_api.get_week_lessons(base, group_uuid, monday)
-    home = schedule_api.home_territory(base, group_uuid)
-    text = format_week_schedule(monday, week, home)
-    await _reply(message, text)
+    await _send_week(message, conn, monday)
 
 
 async def cmd_nextweek(message: Message, conn) -> None:
-    """Расписание на СЛЕДУЮЩУЮ неделю."""
-    group_uuid = db.get_setting(conn, "group_uuid")
-    if not group_uuid:
-        await message.answer("⚠️ Группа ещё не настроена.")
-        return
-
-    base = _load_base(conn)
-    if base is None:
-        await message.answer("⚠️ Не удалось получить справочники.")
-        return
-
     monday = _current_monday(date.today()) + timedelta(days=7)
-    week = schedule_api.get_week_lessons(base, group_uuid, monday)
-    home = schedule_api.home_territory(base, group_uuid)
-    text = format_week_schedule(monday, week, home)
-    await _reply(message, text)
+    await _send_week(message, conn, monday)
 
 
 async def cmd_status(message: Message, conn) -> None:
