@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем код
 COPY *.py .
 COPY README.md .
+COPY assets/ ./assets/
 
 # Папка для БД — монтируется через volume
 RUN mkdir -p /app/data
