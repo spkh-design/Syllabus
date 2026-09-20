@@ -47,7 +47,7 @@ async def test_upload_png_success(monkeypatch):
     fake_response.raise_for_status = MagicMock()
 
     with patch("vk_upload.requests.post", return_value=fake_response) as post:
-        attachment = await upload_png_to_vk(api, b"\x89PNG...")
+        attachment = await upload_png_to_vk(api, b"\x89PNG...", max_attempts=1)
 
     assert attachment == "photo-123_456"
     # Проверяем, что post вызван с data=bytes и headers
@@ -63,7 +63,7 @@ async def test_upload_png_no_upload_url(monkeypatch):
     api = MagicMock()
     api.photos.get_messages_upload_server = AsyncMock(return_value={})
     with pytest.raises(RuntimeError, match="upload_url"):
-        await upload_png_to_vk(api, b"x")
+        await upload_png_to_vk(api, b"x", max_attempts=1)
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_upload_png_list_response(monkeypatch):
     fake_response.raise_for_status = MagicMock()
 
     with patch("vk_upload.requests.post", return_value=fake_response):
-        attachment = await upload_png_to_vk(api, b"x")
+        attachment = await upload_png_to_vk(api, b"x", max_attempts=1)
 
     assert attachment == "photo-1_2"
 
@@ -93,7 +93,7 @@ async def test_upload_png_passes_peer_id(monkeypatch):
     fake_response.raise_for_status = MagicMock()
 
     with patch("vk_upload.requests.post", return_value=fake_response):
-        await upload_png_to_vk(api, b"x", peer_id=2000000001)
+        await upload_png_to_vk(api, b"x", peer_id=2000000001, max_attempts=1)
 
     api.photos.get_messages_upload_server.assert_awaited_once_with(peer_id=2000000001)
 
@@ -110,7 +110,7 @@ async def test_upload_png_empty_photo_raises(monkeypatch):
 
     with patch("vk_upload.requests.post", return_value=fake_response):
         with pytest.raises(RuntimeError, match="VK не принял файл"):
-            await upload_png_to_vk(api, b"x", peer_id=2000000001)
+            await upload_png_to_vk(api, b"x", peer_id=2000000001, max_attempts=1)
 
     api.photos.save_messages_photo.assert_not_called()
 
@@ -126,7 +126,33 @@ async def test_upload_png_passes_group_id(monkeypatch):
     fake_response.raise_for_status = MagicMock()
 
     with patch("vk_upload.requests.post", return_value=fake_response):
-        await upload_png_to_vk(api, b"x", peer_id=2000000001)
+        await upload_png_to_vk(api, b"x", peer_id=2000000001, max_attempts=1)
 
     api.photos.get_messages_upload_server.assert_awaited_once_with(peer_id=2000000001, group_id=241466586)
     api.photos.save_messages_photo.assert_awaited_once_with(photo='[{"id":1}]', server=1, hash="h", group_id=241466586)
+
+
+@pytest.mark.asyncio
+async def test_upload_png_retries_on_empty_photo(monkeypatch):
+    """photo='' на первой попытке, валидно на второй → успех."""
+    monkeypatch.setattr(vk_upload, "VK_GROUP_ID", None)
+
+    api = MagicMock()
+    api.photos.get_messages_upload_server = AsyncMock(return_value={"upload_url": "https://upload.example/"})
+    api.photos.save_messages_photo = AsyncMock(return_value={"owner_id": -1, "id": 2})
+
+    empty = MagicMock()
+    empty.json.return_value = {"server": 1, "photo": "[]", "hash": "h"}
+    empty.raise_for_status = MagicMock()
+
+    ok = MagicMock()
+    ok.json.return_value = {"server": 1, "photo": '[{"id":1}]', "hash": "h"}
+    ok.raise_for_status = MagicMock()
+
+    with patch("vk_upload.requests.post", side_effect=[empty, ok]) as post, patch(
+        "vk_upload.asyncio.sleep", new=AsyncMock()
+    ):
+        attachment = await upload_png_to_vk(api, b"x", max_attempts=3)
+
+    assert attachment == "photo-1_2"
+    assert post.call_count == 2
