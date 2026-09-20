@@ -256,12 +256,3 @@ pytest test_scheduler.py -v
 
 Тесты не ходят в сеть — HTTP замокан. `test_smoke.py` запускается
 только вручную (`pytest -m smoke`).
-
-### Диагностика
-
-Если изображение не загружается в VK:
-
-- запустить `python debug_upload.py` — проверяет несколько способов
-  загрузки PNG в VK;
-- в логах искать `VK upload-server response keys: ...` и
-  `VK не принял файл ...`.
