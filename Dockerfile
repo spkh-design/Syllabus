@@ -7,12 +7,12 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Сначала зависимости — это кэшируется, если requirements.txt не менялся
-COPY requirements.txt .
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем код
-COPY *.py .
-COPY README.md .
+COPY *.py ./
+COPY README.md ./
 COPY assets/ ./assets/
 
 # Папка для БД — монтируется через volume
