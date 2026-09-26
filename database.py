@@ -101,7 +101,11 @@ CREATE INDEX IF NOT EXISTS idx_notifications_lookup
 def init_db(path: str | Path = "bot.db") -> sqlite3.Connection:
     """Открывает/создаёт БД и применяет схему.
 
-    Включает WAL-режим для параллельного чтения.
+    Использует journal_mode=DELETE — все записи идут напрямую в bot.db,
+    без промежуточного WAL-файла. Это надёжнее для деплоя на хостингах,
+    где volume может быть пересоздан между перезапусками контейнера:
+    при WAL-режиме данные живут в bot.db-wal и теряются, если файл
+    не пережил пересборку.
     Безопасен при многократном вызове.
     """
     path = str(path)
@@ -109,7 +113,7 @@ def init_db(path: str | Path = "bot.db") -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
 
     with _write_lock:
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)
         conn.commit()
