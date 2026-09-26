@@ -67,7 +67,7 @@ _SPECIAL_ROOM_LABELS = {"дист.об.", "дистант", "дистанцио�
 # ---------- Размеры ----------
 
 WEEK_WIDTH = 1900
-DAY_WIDTH = 900
+DAY_WIDTH = 1200
 PADDING = 25
 TIME_COL_WIDTH = 110
 HEADER_HEIGHT = 60
