@@ -61,7 +61,7 @@ def test_shorten_fio(raw, expected):
 def test_render_day_empty():
     png = render_day(date(2026, 9, 21), [], "")
     img = _open_png(png)
-    assert img.width == 900
+    assert img.width == 1200
     assert img.height > 0
     assert img.format == "PNG"
 
@@ -70,7 +70,7 @@ def test_render_day_with_lessons():
     lessons = [L(1), L(2, discipline="Математика")]
     png = render_day(date(2026, 9, 22), lessons, "")
     img = _open_png(png)
-    assert img.width == 900
+    assert img.width == 1200
 
 
 def test_render_day_with_changes():
