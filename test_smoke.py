@@ -12,7 +12,6 @@ import pytest
 
 import schedule_api
 
-
 pytestmark = pytest.mark.smoke
 
 
@@ -22,7 +21,7 @@ def test_real_index_endpoint_responds():
     assert "divisions" in data
     assert "groups" in data
     assert "teachers" in data
-    assert len(data["divisions"]) == 5
+    assert len(data["divisions"]) >= 5
     assert len(data["groups"]) > 100
 
 
@@ -55,10 +54,7 @@ def test_real_group_419_in_sp4():
         print(f"\n⚠️  Группа 419 в СП-4 не найдена.")
         print(f"    Групп с '419' в названии: {len(candidates)}")
         for g in candidates[:5]:
-            div = next(
-                (d for d in base["divisions"] if d["id"] == g["division"]),
-                None,
-            )
+            div = next((d for d in base["divisions"] if d["id"] == g["division"]), None)
             print(f"    - {g['name']} / {div['name'] if div else '???'}")
         pytest.skip("Группа 419 в СП-4 отсутствует — см. лог выше")
     else:

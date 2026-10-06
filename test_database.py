@@ -63,9 +63,10 @@ def test_init_db_idempotent(tmp_path):
     c3.close()
 
 
-def test_init_db_wal_mode(conn):
+def test_init_db_delete_mode(conn):
+    """journal_mode=DELETE — записи идут прямо в bot.db, без WAL-файла."""
     mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    assert mode.lower() == "wal"
+    assert mode.lower() == "delete"
 
 
 # ---------- Настройки ----------
