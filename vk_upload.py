@@ -58,26 +58,59 @@ def _build_multipart(png_bytes: bytes, field_name: str = "photo", filename: str 
 
 
 async def upload_png_to_vk(
-    bot_api, png_bytes: bytes, *, peer_id: int | None = None, group_id: int | None = None
+    bot_api,
+    png_bytes: bytes,
+    *,
+    peer_id: int | None = None,
+    group_id: int | None = None,
+    max_attempts: int = 3,
+    retry_delay: float = 3.0,
 ) -> str:
     """Загружает PNG в VK и возвращает attachment.
+
+    При photo='' (частая реакция VK на частые запросы) — повторяет
+    попытку через retry_delay секунд, до max_attempts раз.
 
     Args:
         bot_api: vkbottle API.
         png_bytes: содержимое PNG.
-        peer_id: ID чата, куда будет отправлено фото. Для беседы — обязателен.
+        peer_id: ID чата, куда будет отправлено фото.
         group_id: ID сообщества. По умолчанию — из config.
+        max_attempts: сколько раз пытаться при пустом photo.
+        retry_delay: пауза между попытками, секунды.
 
     Returns:
         attachment — строка вида "photo-123456_789".
 
     Raises:
-        RuntimeError — если VK отказался принять файл или вернул неожиданное.
+        RuntimeError — если VK отказался принять файл после всех попыток.
     """
     if group_id is None:
         group_id = VK_GROUP_ID
 
-    # Шаг 1: получаем upload-сервер
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await _upload_png_once(bot_api, png_bytes, peer_id=peer_id, group_id=group_id)
+        except RuntimeError as e:
+            last_error = e
+            # Ретраим только «VK не принял файл» (photo пустой/[]).
+            # Остальные RuntimeError (нет upload_url, ошибки save) — сразу наружу.
+            if "VK не принял файл" in str(e):
+                if attempt < max_attempts:
+                    logger.warning(
+                        "VK отверг PNG (попытка %d/%d), повтор через %.1f с: %s", attempt, max_attempts, retry_delay, e
+                    )
+                    await asyncio.sleep(retry_delay)
+                    continue
+            raise
+
+    raise last_error or RuntimeError("upload_png_to_vk: не удалось загрузить")
+
+
+async def _upload_png_once(bot_api, png_bytes: bytes, *, peer_id: int | None, group_id: int | None) -> str:
+    """Одна попытка загрузки PNG в VK."""
     params: dict = {}
     if peer_id is not None:
         params["peer_id"] = peer_id
@@ -90,7 +123,6 @@ async def upload_png_to_vk(
     if not upload_url:
         raise RuntimeError(f"VK не вернул upload_url: {server_dict}")
 
-    # Шаг 2: POST с ручным multipart
     body, content_type = _build_multipart(png_bytes)
     headers = {"Content-Type": content_type, "User-Agent": USER_AGENT}
 
@@ -106,7 +138,6 @@ async def upload_png_to_vk(
         group_id,
     )
 
-    # Проверяем, что photo не пустое
     photo_field = uploaded.get("photo")
     if not photo_field or photo_field == "[]":
         raise RuntimeError(
@@ -115,7 +146,6 @@ async def upload_png_to_vk(
             f"png size={len(png_bytes)} bytes"
         )
 
-    # Шаг 3: сохраняем фото в сообщениях
     save_params: dict = {"photo": photo_field, "server": uploaded["server"], "hash": uploaded["hash"]}
     if group_id is not None:
         save_params["group_id"] = group_id

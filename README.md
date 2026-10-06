@@ -214,9 +214,9 @@ python bot.py
 
    ```
    VK_TOKEN=vk1.a.xxxxx
-   VK_GROUP_ID=241466586
-   ADMIN_USER_IDS=462149562
-   ADMIN_PEER_ID=462149562
+   VK_GROUP_ID=xxxxxxxxx
+   ADMIN_USER_IDS=xxxxxxxxx
+   ADMIN_PEER_ID=xxxxxxxxx
    TZ=Asia/Yekaterinburg
    DB_PATH=/app/data/bot.db
    CHECK_INTERVAL_MINUTES=30
@@ -251,7 +251,7 @@ python bot.py
 ```bash
 pytest -v                # все тесты
 pytest -m smoke -v       # только smoke (реальный API, вручную)
-pytest test_scheduler.py -v
+pytest test_scheduler.py -v # вместо test_scheduler.py любой другой файл с тестами
 ```
 
 Тесты не ходят в сеть — HTTP замокан. `test_smoke.py` запускается
