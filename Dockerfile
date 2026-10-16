@@ -6,6 +6,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Системные зависимости для OCR (Tesseract + русский язык)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        tesseract-ocr-rus \
+    && rm -rf /var/lib/apt/lists/*
+
 # Сначала зависимости — это кэшируется, если requirements.txt не менялся
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
