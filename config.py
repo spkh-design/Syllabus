@@ -16,8 +16,8 @@
     VK_TOKEN=vk1.a.xxxxx
     DB_PATH=bot.db
     CHECK_INTERVAL_MINUTES=30
-    ADMIN_USER_IDS=462149562,987654321
-    ADMIN_PEER_ID=462149562
+    ADMIN_USER_IDS=xxxxxxxxx,yyyyyyyyy
+    ADMIN_PEER_ID=xxxxxxxxx
 """
 
 from __future__ import annotations
