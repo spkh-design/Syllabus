@@ -35,6 +35,7 @@ from vkbottle.bot import Message
 from schedule_sender import send_schedule_message
 from scheduler import ScheduleMessage
 
+import re
 import database as db
 import schedule_api
 from config import is_admin_id
@@ -670,33 +671,66 @@ async def cmd_groups(message: Message, conn) -> None:
 async def _resolve_curator_id(ctx_api, arg: str) -> tuple[int | None, str]:
     """Преобразует `@username` или числовой ID в (user_id, error_message).
 
-    Returns:
-        (user_id, "") при успехе,
-        (None, "текст ошибки") при неудаче.
+    Возвращает (user_id, "") при успехе, (None, "текст ошибки") при неудаче.
+
+    Сначала пробуем `utils.resolve_screen_name` (надёжнее для username),
+    потом fallback на `users.get` — на случай, если первый метод
+    недоступен в каком-то окружении.
     """
-    arg = arg.strip().lstrip("@")
+    arg = (arg or "").strip()
+
+    # 0. VK подставляет упоминание как [id123|Имя]. Если видим такое —
+    #    сразу вытаскиваем ID, никаких запросов к API не надо.
+    m = re.search(r"\[id(\d+)\|[^\]]+\]", arg)
+    if m:
+        return int(m.group(1)), ""
+
+    # Убираем @ у username
+    arg = arg.lstrip("@")
     if not arg:
         return None, "Пустой аргумент."
 
+    # 1. Если это число — сразу возвращаем
     if arg.isdigit():
         return int(arg), ""
 
-    # Пытаемся резолвить как username через VK API
-    try:
-        users = await ctx_api.users.get(user_ids=[arg])
-    except Exception as e:
-        return None, f"Не удалось найти пользователя «{arg}»: {e}"
+    uid: int | None = None
 
-    if not users:
+    # 2. resolve_screen_name — надёжнее для username
+    try:
+        resolved = await ctx_api.utils.resolve_screen_name(screen_name=arg)
+        logger.info("resolve_screen_name(%r) → %r", arg, resolved)
+        if resolved is not None:
+            obj_id = getattr(resolved, "object_id", None)
+            if obj_id is None and isinstance(resolved, dict):
+                obj_id = resolved.get("object_id")
+            obj_type = getattr(resolved, "type", None)
+            # Только если это user (не группа)
+            type_value = getattr(obj_type, "value", obj_type)
+            if obj_id and (type_value == "user" or type_value is None):
+                uid = int(obj_id)
+    except Exception as e:
+        logger.warning("resolve_screen_name(%r) упал: %s", arg, e)
+
+    # 3. Fallback — users.get
+    if uid is None:
+        try:
+            users = await ctx_api.users.get(user_ids=[arg])
+            logger.info("users.get([%r]) → %d шт.", arg, len(users or []))
+            if users:
+                user = users[0]
+                uid_value = getattr(user, "id", None)
+                if uid_value is None and isinstance(user, dict):
+                    uid_value = user.get("id")
+                if uid_value:
+                    uid = int(uid_value)
+        except Exception as e:
+            logger.warning("users.get([%r]) упал: %s", arg, e)
+
+    if uid is None:
         return None, f"Пользователь «{arg}» не найден."
 
-    # vkbottle возвращает список объектов с атрибутом id
-    user = users[0]
-    uid = getattr(user, "id", None) or (user.get("id") if isinstance(user, dict) else None)
-    if uid is None:
-        return None, f"VK API не вернул ID для «{arg}»."
-
-    return int(uid), ""
+    return uid, ""
 
 
 async def cmd_set_curator(message: Message, conn, args: str) -> None:
