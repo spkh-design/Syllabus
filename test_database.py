@@ -158,17 +158,20 @@ def test_delete_snapshot(conn):
 
 
 def test_cleanup_old_snapshots(conn):
-    today = date(2026, 9, 12)
-    save_snapshot(conn, "grp-1", today, [])
-    save_snapshot(conn, "grp-1", today - timedelta(days=100), [])
-    save_snapshot(conn, "grp-1", today - timedelta(days=5), [])
+    """Удаляются снимки старше 30 дней от СЕГОДНЯ (реальной даты)."""
+    today = datetime.now().date()
+    # Свежая неделя
+    set_week_announced(conn, "grp-1", today, is_full=True)
+    # Старая — 100 дней назад
+    set_week_announced(conn, "grp-1", today - timedelta(days=100), is_full=True)
+    # Ещё одна свежая
+    set_week_announced(conn, "grp-1", today - timedelta(days=5), is_full=True)
 
-    deleted = cleanup_old_snapshots(conn, keep_days=30)
-    assert deleted == 1  # удалился только столетний
-
-    assert get_snapshot(conn, "grp-1", today) is not None
-    assert get_snapshot(conn, "grp-1", today - timedelta(days=100)) is None
-    assert get_snapshot(conn, "grp-1", today - timedelta(days=5)) is not None
+    deleted = cleanup_old_announced_weeks(conn, keep_days=30)
+    assert deleted == 1
+    assert get_week_announced(conn, "grp-1", today) is not None
+    assert get_week_announced(conn, "grp-1", today - timedelta(days=100)) is None
+    assert get_week_announced(conn, "grp-1", today - timedelta(days=5)) is not None
 
 
 def test_snapshot_date_accepts_string(conn):
@@ -367,7 +370,7 @@ def test_clear_week_announced_all_for_group(conn):
 
 
 def test_cleanup_old_announced_weeks(conn):
-    today = date(2026, 9, 14)
+    today = datetime.now().date()
     # Свежая неделя
     set_week_announced(conn, "grp-1", today, is_full=True)
     # Старая — 100 дней назад
@@ -431,9 +434,366 @@ def test_delete_week_image(conn):
 
 
 def test_cleanup_old_week_images(conn):
-    today = date(2026, 9, 21)
+    """Динамические даты — не зависим от реальной сегодняшней даты."""
+    today = datetime.now().date()
     save_week_image(conn, "grp-1", today, b"new")
     save_week_image(conn, "grp-1", today - timedelta(days=100), b"old")
     deleted = cleanup_old_week_images(conn, keep_days=30)
     assert deleted == 1
     assert get_week_image(conn, "grp-1", today) is not None
+    assert get_week_image(conn, "grp-1", today - timedelta(days=100)) is None
+
+
+# ============================================================
+# groups
+# ============================================================
+
+
+def test_add_group_creates(conn):
+    from database import add_group, get_group
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    g = get_group(conn, 2000000002)
+    assert g is not None
+    assert g["group_uuid"] == "grp-419"
+    assert g["group_name"] == "419"
+    assert g["division"] == "СП-4"
+    assert g["curator_id"] is None
+    assert g["is_active"] is True
+
+
+def test_add_group_overwrites(conn):
+    from database import add_group, get_group
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    add_group(conn, 2000000002, "grp-301", "301", "СП-2")
+    g = get_group(conn, 2000000002)
+    assert g["group_uuid"] == "grp-301"
+    assert g["group_name"] == "301"
+
+
+def test_add_group_preserves_curator(conn):
+    from database import add_group, get_group, set_group_curator
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    set_group_curator(conn, 2000000002, 123456)
+    # Повторная регистрация без куратора — куратор не должен затереться
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4", curator_id=None)
+    g = get_group(conn, 2000000002)
+    assert g["curator_id"] == 123456
+
+
+def test_get_group_missing(conn):
+    from database import get_group
+
+    assert get_group(conn, 999) is None
+
+
+def test_get_all_groups(conn):
+    from database import add_group, get_all_groups
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    add_group(conn, 2000000003, "grp-301", "301", "СП-2")
+    groups = get_all_groups(conn)
+    assert len(groups) == 2
+
+
+def test_get_all_groups_only_active(conn):
+    from database import add_group, get_all_groups, set_group_active
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    add_group(conn, 2000000003, "grp-301", "301", "СП-2")
+    set_group_active(conn, 2000000003, False)
+    assert len(get_all_groups(conn)) == 1
+    assert len(get_all_groups(conn, only_active=False)) == 2
+
+
+def test_remove_group(conn):
+    from database import add_group, get_group, remove_group
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    remove_group(conn, 2000000002)
+    assert get_group(conn, 2000000002) is None
+
+
+def test_set_group_curator(conn):
+    from database import add_group, get_group, set_group_curator
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    set_group_curator(conn, 2000000002, 555)
+    assert get_group(conn, 2000000002)["curator_id"] == 555
+    set_group_curator(conn, 2000000002, None)
+    assert get_group(conn, 2000000002)["curator_id"] is None
+
+
+def test_set_group_active(conn):
+    from database import add_group, get_group, set_group_active
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    set_group_active(conn, 2000000002, False)
+    assert get_group(conn, 2000000002)["is_active"] is False
+
+
+# ============================================================
+# user_sessions
+# ============================================================
+
+
+def test_set_get_user_session(conn):
+    from database import set_user_session, get_user_session
+
+    set_user_session(conn, 12345, 2000000002)
+    assert get_user_session(conn, 12345) == 2000000002
+
+
+def test_user_session_none(conn):
+    from database import get_user_session
+
+    assert get_user_session(conn, 999) is None
+
+
+def test_user_session_overwrites(conn):
+    from database import set_user_session, get_user_session
+
+    set_user_session(conn, 12345, 2000000002)
+    set_user_session(conn, 12345, 2000000003)
+    assert get_user_session(conn, 12345) == 2000000003
+
+
+def test_clear_user_session(conn):
+    from database import set_user_session, get_user_session, clear_user_session
+
+    set_user_session(conn, 12345, 2000000002)
+    clear_user_session(conn, 12345)
+    assert get_user_session(conn, 12345) is None
+
+
+# ============================================================
+# chat_messages
+# ============================================================
+
+
+def test_save_chat_message(conn):
+    from database import save_chat_message, get_chat_message
+
+    save_chat_message(conn, 2000000002, 100, 111, "привет", [])
+    m = get_chat_message(conn, 2000000002, 100)
+    assert m is not None
+    assert m["text"] == "привет"
+    assert m["from_id"] == 111
+
+
+def test_save_chat_message_idempotent(conn):
+    from database import save_chat_message, get_chat_message
+
+    save_chat_message(conn, 2000000002, 100, 111, "первая", [])
+    save_chat_message(conn, 2000000002, 100, 111, "вторая", [])
+    m = get_chat_message(conn, 2000000002, 100)
+    assert m["text"] == "первая"  # первая версия не перезаписана
+
+
+def test_get_chat_messages_since(conn):
+    from database import save_chat_message, get_chat_messages_since
+
+    save_chat_message(conn, 2000000002, 100, 111, "старое", [])
+    save_chat_message(conn, 2000000002, 101, 111, "новое", [])
+    # Вручную сдвинем время первого
+    conn.execute("UPDATE chat_messages SET sent_at = '2020-01-01T00:00:00' " "WHERE message_id = 100")
+    conn.commit()
+    msgs = get_chat_messages_since(conn, 2000000002, "2024-01-01T00:00:00")
+    assert len(msgs) == 1
+    assert msgs[0]["text"] == "новое"
+
+
+def test_count_chat_messages_since(conn):
+    from database import save_chat_message, count_chat_messages_since
+
+    save_chat_message(conn, 2000000002, 100, 111, "a", [])
+    save_chat_message(conn, 2000000002, 101, 222, "b", [])
+    save_chat_message(conn, 2000000002, 102, 333, "c", [])
+    n = count_chat_messages_since(conn, 2000000002, "2020-01-01", "2030-01-01")
+    assert n == 3
+
+
+def test_count_chat_messages_exclude_from_id(conn):
+    from database import save_chat_message, count_chat_messages_since
+
+    save_chat_message(conn, 2000000002, 100, 111, "a", [])
+    save_chat_message(conn, 2000000002, 101, 999, "b", [])  # бот
+    n = count_chat_messages_since(conn, 2000000002, "2020-01-01", "2030-01-01", exclude_from_id=999)
+    assert n == 1
+
+
+def test_mark_chat_message_ocr_done(conn):
+    from database import save_chat_message, get_chat_message, mark_chat_message_ocr_done
+
+    save_chat_message(conn, 2000000002, 100, 111, "", [{"type": "photo"}])
+    assert get_chat_message(conn, 2000000002, 100)["ocr_done"] is False
+    mark_chat_message_ocr_done(conn, 2000000002, 100)
+    assert get_chat_message(conn, 2000000002, 100)["ocr_done"] is True
+
+
+def test_cleanup_old_chat_messages(conn):
+    from database import save_chat_message, cleanup_old_chat_messages
+
+    save_chat_message(conn, 2000000002, 100, 111, "старое", [])
+    save_chat_message(conn, 2000000002, 101, 111, "новое", [])
+    conn.execute("UPDATE chat_messages SET sent_at = '2020-01-01T00:00:00' " "WHERE message_id = 100")
+    conn.commit()
+    deleted = cleanup_old_chat_messages(conn, keep_days=30)
+    assert deleted == 1
+
+
+# ============================================================
+# bell_schedules
+# ============================================================
+
+
+def test_save_bell_schedule(conn):
+    from database import save_bell_schedule, get_bell_schedule
+
+    save_bell_schedule(
+        conn, 2000000002, "2026-10-05", 500, 111, image_bytes=b"PNG...", caption="звонки", ocr_text="РАСПИСАНИЕ ЗВОНОК"
+    )
+    bs = get_bell_schedule(conn, 2000000002, "2026-10-05")
+    assert bs is not None
+    assert bs["target_date"] == "2026-10-05"
+    assert bs["image_bytes"] == b"PNG..."
+    assert bs["sent_at"] is None
+
+
+def test_save_bell_schedule_overwrites(conn):
+    from database import save_bell_schedule, get_bell_schedule, mark_bell_schedule_sent
+
+    save_bell_schedule(conn, 2000000002, "2026-10-05", 500, 111)
+    mark_bell_schedule_sent(conn, 2000000002, "2026-10-05")
+    assert get_bell_schedule(conn, 2000000002, "2026-10-05")["sent_at"] is not None
+    # Новая версия — sent_at должен сброситься
+    save_bell_schedule(conn, 2000000002, "2026-10-05", 501, 111)
+    assert get_bell_schedule(conn, 2000000002, "2026-10-05")["sent_at"] is None
+
+
+def test_get_bell_schedule_missing(conn):
+    from database import get_bell_schedule
+
+    assert get_bell_schedule(conn, 2000000002, "2026-10-05") is None
+
+
+def test_mark_bell_schedule_sent(conn):
+    from database import save_bell_schedule, mark_bell_schedule_sent, get_bell_schedule
+
+    save_bell_schedule(conn, 2000000002, "2026-10-05", 500, 111)
+    mark_bell_schedule_sent(conn, 2000000002, "2026-10-05")
+    assert get_bell_schedule(conn, 2000000002, "2026-10-05")["sent_at"] is not None
+
+
+def test_delete_bell_schedule(conn):
+    from database import save_bell_schedule, delete_bell_schedule, get_bell_schedule
+
+    save_bell_schedule(conn, 2000000002, "2026-10-05", 500, 111)
+    delete_bell_schedule(conn, 2000000002, "2026-10-05")
+    assert get_bell_schedule(conn, 2000000002, "2026-10-05") is None
+
+
+def test_cleanup_old_bell_schedules(conn):
+    from database import save_bell_schedule, cleanup_old_bell_schedules, get_bell_schedule
+
+    # Прошлое — должно удалиться
+    save_bell_schedule(conn, 2000000002, "2020-01-01", 500, 111)
+    # Будущее — должно остаться
+    save_bell_schedule(conn, 2000000002, "2099-12-31", 501, 111)
+    deleted = cleanup_old_bell_schedules(conn)
+    assert deleted == 1
+    assert get_bell_schedule(conn, 2000000002, "2020-01-01") is None
+    assert get_bell_schedule(conn, 2000000002, "2099-12-31") is not None
+
+
+# ============================================================
+# holiday_pings
+# ============================================================
+
+
+def test_mark_holiday_pinged(conn):
+    from database import mark_holiday_pinged, was_holiday_pinged
+
+    mark_holiday_pinged(conn, 2000000002, "2026-10-05")
+    assert was_holiday_pinged(conn, 2000000002, "2026-10-05") is True
+
+
+def test_was_holiday_pinged_false(conn):
+    from database import was_holiday_pinged
+
+    assert was_holiday_pinged(conn, 2000000002, "2026-10-05") is False
+
+
+def test_cleanup_old_holiday_pings(conn):
+    from database import mark_holiday_pinged, cleanup_old_holiday_pings
+
+    mark_holiday_pinged(conn, 2000000002, "2020-01-01")
+    mark_holiday_pinged(conn, 2000000002, "2099-12-31")
+    deleted = cleanup_old_holiday_pings(conn, keep_days=30)
+    assert deleted == 1
+
+
+# ============================================================
+# daily cleanup trigger
+# ============================================================
+
+
+def test_should_run_daily_cleanup_no_marker(conn):
+    from database import should_run_daily_cleanup
+
+    assert should_run_daily_cleanup(conn) is True
+
+
+def test_should_run_daily_cleanup_recent(conn):
+    from database import should_run_daily_cleanup, mark_daily_cleanup_done
+
+    mark_daily_cleanup_done(conn)
+    assert should_run_daily_cleanup(conn) is False
+
+
+def test_should_run_daily_cleanup_old(conn):
+    from database import should_run_daily_cleanup, set_setting
+
+    set_setting(conn, "last_cleanup_at", "2020-01-01T00:00:00")
+    assert should_run_daily_cleanup(conn) is True
+
+
+# ============================================================
+# migrate settings → groups
+# ============================================================
+
+
+def test_migrate_settings_to_groups(conn):
+    from database import migrate_settings_to_groups, get_group, get_setting
+
+    set_setting(conn, "peer_id", "2000000002")
+    set_setting(conn, "group_uuid", "grp-419")
+    set_setting(conn, "group_name", "419")
+    set_setting(conn, "division", "СП-4")
+
+    result = migrate_settings_to_groups(conn)
+    assert result is True
+
+    g = get_group(conn, 2000000002)
+    assert g is not None
+    assert g["group_uuid"] == "grp-419"
+    # Старые ключи пока НЕ удаляем (переходный период)
+    assert get_setting(conn, "group_uuid") == "grp-419"
+
+
+def test_migrate_settings_to_groups_no_data(conn):
+    from database import migrate_settings_to_groups
+
+    assert migrate_settings_to_groups(conn) is False
+
+
+def test_migrate_settings_to_groups_groups_not_empty(conn):
+    from database import migrate_settings_to_groups, add_group
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    set_setting(conn, "peer_id", "2000000003")
+    set_setting(conn, "group_uuid", "grp-301")
+    # Уже есть группа — миграция не делается
+    assert migrate_settings_to_groups(conn) is False
