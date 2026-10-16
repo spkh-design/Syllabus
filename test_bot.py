@@ -13,6 +13,7 @@ import database as db
 def bot_module(tmp_path):
     """Изолированный bot.py на временной БД."""
     import bot
+
     original_conn = bot.conn
     bot.conn = db.init_db(tmp_path / "bot.db")
     yield bot
@@ -22,13 +23,11 @@ def bot_module(tmp_path):
 
 @pytest.mark.asyncio
 async def test_greeting_skipped_if_db_configured(bot_module):
-    """Если группа уже настроена — приветствие не уходит."""
-    db.set_setting(bot_module.conn, "group_uuid", "grp-419")
+    """Если группа уже зарегистрирована — приветствие не уходит."""
+    db.add_group(bot_module.conn, peer_id=2000000002, group_uuid="grp-419", group_name="419", division="СП-4")
     mock_send = AsyncMock()
 
-    await bot_module.send_startup_greeting(
-        bot_module.conn, admin_peer_id=462149562, send_func=mock_send,
-    )
+    await bot_module.send_startup_greeting(bot_module.conn, admin_peer_id=462149562, send_func=mock_send)
     mock_send.assert_not_called()
 
 
@@ -37,9 +36,7 @@ async def test_greeting_skipped_if_no_admin_peer(bot_module):
     """Если ADMIN_PEER_ID не задан — приветствие не уходит."""
     mock_send = AsyncMock()
 
-    await bot_module.send_startup_greeting(
-        bot_module.conn, admin_peer_id=None, send_func=mock_send,
-    )
+    await bot_module.send_startup_greeting(bot_module.conn, admin_peer_id=None, send_func=mock_send)
     mock_send.assert_not_called()
 
 
@@ -48,9 +45,7 @@ async def test_greeting_sent_when_db_empty(bot_module):
     """Пустая БД + задан ADMIN_PEER_ID → приветствие уходит."""
     mock_send = AsyncMock()
 
-    await bot_module.send_startup_greeting(
-        bot_module.conn, admin_peer_id=462149562, send_func=mock_send,
-    )
+    await bot_module.send_startup_greeting(bot_module.conn, admin_peer_id=462149562, send_func=mock_send)
     mock_send.assert_called_once()
     call_kwargs = mock_send.call_args.kwargs
     assert call_kwargs["peer_id"] == 462149562
@@ -64,13 +59,12 @@ async def test_greeting_handles_send_error(bot_module):
     mock_send = AsyncMock(side_effect=Exception("VK API down"))
 
     # Не должно упасть
-    await bot_module.send_startup_greeting(
-        bot_module.conn, admin_peer_id=462149562, send_func=mock_send,
-    )
+    await bot_module.send_startup_greeting(bot_module.conn, admin_peer_id=462149562, send_func=mock_send)
     mock_send.assert_called_once()
 
 
 # ---------- on_unknown ----------
+
 
 @pytest.mark.asyncio
 async def test_unknown_silent_on_plain_text(bot_module):
