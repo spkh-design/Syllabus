@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем код
 COPY *.py ./
 COPY README.md ./
+COPY holidays.json ./
 COPY assets/ ./assets/
 
 # Папка для БД — монтируется через volume
