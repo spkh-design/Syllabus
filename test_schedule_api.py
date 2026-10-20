@@ -394,3 +394,85 @@ def test_get_group_lessons_includes_territory(base_info, schedule_payload):
         mock_get.return_value = mock_response
         lessons = get_group_lessons(base_info, "grp-419", date(2026, 9, 12))
     assert "territory" in lessons[0]
+
+
+# ---------- find_teacher ----------
+
+
+def test_find_teacher_success(base_info):
+    from schedule_api import find_teacher
+
+    base_info["teachers"] = [{"name": "Юнева Наталья Дмитриевна", "id": "uuid-yuneva"}]
+    t = find_teacher(base_info, "Юнева Наталья Дмитриевна")
+    assert t is not None
+    assert t["id"] == "uuid-yuneva"
+
+
+def test_find_teacher_case_insensitive(base_info):
+    from schedule_api import find_teacher
+
+    base_info["teachers"] = [{"name": "Юнева Наталья Дмитриевна", "id": "uuid-yuneva"}]
+    assert find_teacher(base_info, "юнева наталья дмитриевна") is not None
+
+
+def test_find_teacher_not_found(base_info):
+    from schedule_api import find_teacher
+
+    base_info["teachers"] = [{"name": "Юнева Наталья Дмитриевна", "id": "uuid-yuneva"}]
+    assert find_teacher(base_info, "Иванов Иван Иванович") is None
+
+
+# ---------- get_teacher_lessons ----------
+
+
+def test_get_teacher_lessons_filters_and_substitutes_group(base_info):
+    from schedule_api import get_teacher_lessons
+
+    # Мокаем API
+    ts = int(datetime(2026, 9, 12, tzinfo=SCHEDULE_TZ).timestamp() * 1000)
+    payload = {
+        "success": True,
+        "schedule": {
+            "data": {
+                "schedule": [
+                    {
+                        "date": ts,
+                        "lessons": [
+                            {
+                                "territory": "ter-sp4",
+                                "discipline": "d-web",
+                                "teacher": "uuid-yuneva",
+                                "auditoria": "a-43",
+                                "lesson_type": "lt-lec",
+                                "number_lesson": 1,
+                                "subgroup": 0,
+                                "group": "grp-419",  # <--- Группа
+                            },
+                            {
+                                # Этот препод не наш, не должен попасть
+                                "territory": "ter-sp4",
+                                "discipline": "d-test",
+                                "teacher": "uuid-other",
+                                "auditoria": "a-45",
+                                "lesson_type": "lt-lec",
+                                "number_lesson": 2,
+                                "subgroup": 0,
+                                "group": "grp-301",
+                            },
+                        ],
+                    }
+                ]
+            }
+        },
+    }
+
+    with patch("schedule_api.requests.get") as mock_get:
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = payload
+        mock_get.return_value = mock_response
+
+        lessons = get_teacher_lessons(base_info, "uuid-yuneva", date(2026, 9, 12))
+
+    assert len(lessons) == 1
+    assert lessons[0]["number"] == 1
+    assert lessons[0]["teacher"] == "Группа 419"  # Подмена поля!
