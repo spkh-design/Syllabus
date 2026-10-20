@@ -797,3 +797,83 @@ def test_migrate_settings_to_groups_groups_not_empty(conn):
     set_setting(conn, "group_uuid", "grp-301")
     # Уже есть группа — миграция не делается
     assert migrate_settings_to_groups(conn) is False
+
+
+# ============================================================
+# teachers
+# ============================================================
+
+
+def test_add_teacher_creates(conn):
+    from database import add_teacher, get_teacher
+
+    add_teacher(conn, 2000000002, "uuid-teacher", "Юнева Наталья Дмитриевна")
+    t = get_teacher(conn, 2000000002)
+    assert t is not None
+    assert t["teacher_uuid"] == "uuid-teacher"
+    assert t["teacher_name"] == "Юнева Наталья Дмитриевна"
+    assert t["is_active"] is True
+
+
+def test_add_teacher_removes_group(conn):
+    """При добавлении преподавателя в ту же беседу группа удаляется."""
+    from database import add_group, add_teacher, get_group, get_teacher
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    add_teacher(conn, 2000000002, "uuid-teacher", "Юнева Н.Д.")
+
+    assert get_group(conn, 2000000002) is None
+    assert get_teacher(conn, 2000000002) is not None
+
+
+def test_add_group_removes_teacher(conn):
+    """При добавлении группы в ту же беседу преподаватель удаляется."""
+    from database import add_group, add_teacher, get_group, get_teacher
+
+    add_teacher(conn, 2000000002, "uuid-teacher", "Юнева Н.Д.")
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+
+    assert get_teacher(conn, 2000000002) is None
+    assert get_group(conn, 2000000002) is not None
+
+
+def test_get_all_teachers(conn):
+    from database import add_teacher, get_all_teachers
+
+    add_teacher(conn, 2000000002, "uuid-1", "Препод 1")
+    add_teacher(conn, 2000000003, "uuid-2", "Препод 2")
+    assert len(get_all_teachers(conn)) == 2
+
+
+def test_remove_teacher(conn):
+    from database import add_teacher, get_teacher, remove_teacher
+
+    add_teacher(conn, 2000000002, "uuid-teacher", "Юнева Н.Д.")
+    remove_teacher(conn, 2000000002)
+    assert get_teacher(conn, 2000000002) is None
+
+
+def test_get_entity_group(conn):
+    from database import add_group, get_entity
+
+    add_group(conn, 2000000002, "grp-419", "419", "СП-4")
+    entity = get_entity(conn, 2000000002)
+    assert entity is not None
+    assert entity["type"] == "group"
+    assert entity["group_name"] == "419"
+
+
+def test_get_entity_teacher(conn):
+    from database import add_teacher, get_entity
+
+    add_teacher(conn, 2000000002, "uuid-teacher", "Юнева Н.Д.")
+    entity = get_entity(conn, 2000000002)
+    assert entity is not None
+    assert entity["type"] == "teacher"
+    assert entity["teacher_name"] == "Юнева Н.Д."
+
+
+def test_get_entity_empty(conn):
+    from database import get_entity
+
+    assert get_entity(conn, 999) is None
