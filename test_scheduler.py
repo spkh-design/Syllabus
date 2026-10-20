@@ -608,3 +608,58 @@ def test_run_cycle_no_change_no_messages(conn, base_info, monkeypatch):
     now = datetime(2026, 9, 13, 15, 0)
     messages = scheduler.run_check_cycle(conn, base_info, "grp-419", now=now)
     assert messages == []
+
+
+# ---------- check_teacher / run_teacher_check_cycle ----------
+
+
+def test_check_teacher_first_run_saves_no_message(conn, base_info, monkeypatch):
+    from scheduler import check_teacher
+
+    monkeypatch.setattr(schedule_api, "get_teacher_lessons", lambda b, g, d: [_lesson(1)])
+    result = check_teacher(conn, base_info, "uuid-yuneva", date(2026, 9, 8))
+    assert result is None
+    assert db.get_snapshot(conn, "uuid-yuneva", date(2026, 9, 8)) is not None
+
+
+def test_check_teacher_single_change_diff(conn, base_info, monkeypatch):
+    from scheduler import check_teacher
+
+    old = [_lesson(1, teacher="Группа 419", auditoria="43")]
+    new = [_lesson(1, teacher="Группа 419", auditoria="45")]
+    db.save_snapshot(conn, "uuid-yuneva", date(2026, 9, 8), old)
+
+    monkeypatch.setattr(schedule_api, "get_teacher_lessons", lambda b, g, d: new)
+    msg = check_teacher(conn, base_info, "uuid-yuneva", date(2026, 9, 8))
+    assert msg is not None
+    assert msg.kind == "day_image"
+    assert "43" in msg.fallback_text and "45" in msg.fallback_text
+
+
+def test_run_teacher_cycle_three_days_sends_week(conn, base_info, monkeypatch):
+    from scheduler import run_teacher_check_cycle
+
+    # Заполняем снимки
+    days = [date(2026, 9, 14), date(2026, 9, 15), date(2026, 9, 16)]
+    for d in days:
+        db.save_snapshot(conn, "uuid-yuneva", d, [_lesson(1, auditoria="43")])
+
+    def fake_get(base, g, d):
+        if d in days:
+            return [_lesson(1, auditoria="45")]
+        return []
+
+    monkeypatch.setattr(schedule_api, "get_teacher_lessons", fake_get)
+    monkeypatch.setattr(
+        schedule_api,
+        "get_teacher_week_lessons",
+        lambda b, g, s: {s + timedelta(days=i): [_lesson(1)] for i in range(7)},
+    )
+
+    now = datetime(2026, 9, 13, 15, 0)  # Вс
+    messages = run_teacher_check_cycle(conn, base_info, "uuid-yuneva", now=now)
+
+    week_msgs = [m for m in messages if m.kind == "week_image"]
+    changes_msgs = [m for m in week_msgs if "Всего изменений за неделю" in m.fallback_text]
+    assert len(changes_msgs) == 1
+    assert "⚠️ ИЗМЕНЕНИЯ:" in changes_msgs[0].fallback_text
