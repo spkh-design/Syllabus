@@ -295,7 +295,22 @@ async def test_use_in_pm_ok(conn):
     db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
     m = FakeMessage(peer_id=PM_PEER, from_id=123)
     await handlers.cmd_use(m, conn, str(CHAT_PEER))
-    assert "активная группа" in m.answers[-1].lower()
+    text = m.answers[-1].lower()
+    # Работает и для групп, и для преподавателей — проверяем общую формулировку
+    assert "активная беседа" in text
+    assert "сп-4 / 419" in text
+    assert db.get_user_session(conn, 123) == CHAT_PEER
+
+
+@pytest.mark.asyncio
+async def test_use_in_pm_for_teacher(conn):
+    """`/use` работает и для беседы преподавателя."""
+    db.add_teacher(conn, CHAT_PEER, "uuid-yuneva", "Юнева Наталья Дмитриевна")
+    m = FakeMessage(peer_id=PM_PEER, from_id=123)
+    await handlers.cmd_use(m, conn, str(CHAT_PEER))
+    text = m.answers[-1].lower()
+    assert "активная беседа" in text
+    assert "преподаватель: юнева наталья дмитриевна" in text
     assert db.get_user_session(conn, 123) == CHAT_PEER
 
 
@@ -404,6 +419,19 @@ async def test_set_curator_username_not_found(admin_ids, conn):
     m.ctx_api.users.get = AsyncMock(return_value=[])
     await handlers.cmd_set_curator(m, conn, "@несуществующий")
     assert "не найден" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_set_curator_for_teacher_forbidden(admin_ids, conn):
+    """Попытка назначить куратора преподавателю должна выдавать ошибку."""
+    db.add_teacher(conn, CHAT_PEER, "uuid-yuneva", "Юнева Н.Д.")
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+
+    await handlers.cmd_set_curator(m, conn, "555")
+
+    assert "у преподавателя нет куратора" in m.answers[-1].lower()
+    # Убеждаемся, что в БД ничего не записалось (там таблица teachers, а не groups)
+    assert db.get_group(conn, CHAT_PEER) is None
 
 
 # ============================================================
@@ -748,3 +776,104 @@ async def test_whoami_non_admin(admin_ids, conn):
     text = m.answers[-1]
     assert "999" in text
     assert "❌ нет" in text
+
+
+# ============================================================
+# /teacher
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_teacher_in_chat(admin_ids, conn, patch_base, monkeypatch):
+    monkeypatch.setattr(
+        schedule_api, "find_teacher", lambda b, n: {"id": "uuid-yuneva", "name": "Юнева Н.Д.", "divisions": ["div-1"]}
+    )
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_teacher(m, conn, "Юнева Н.Д.")
+
+    assert "зарегистрирован" in m.answers[-1].lower()
+    t = db.get_teacher(conn, CHAT_PEER)
+    assert t is not None
+    assert t["teacher_uuid"] == "uuid-yuneva"
+
+
+@pytest.mark.asyncio
+async def test_teacher_in_pm_with_peer(admin_ids, conn, patch_base, monkeypatch):
+    monkeypatch.setattr(
+        schedule_api, "find_teacher", lambda b, n: {"id": "uuid-yuneva", "name": "Юнева Н.Д.", "divisions": ["div-1"]}
+    )
+    m = FakeMessage(peer_id=PM_PEER, from_id=123)
+    await handlers.cmd_teacher(m, conn, f"peer={CHAT_PEER} Юнева Н.Д.")
+
+    assert "зарегистрирован" in m.answers[-1].lower()
+    assert db.get_teacher(conn, CHAT_PEER) is not None
+
+
+@pytest.mark.asyncio
+async def test_teacher_not_found(admin_ids, conn, patch_base, monkeypatch):
+    monkeypatch.setattr(schedule_api, "find_teacher", lambda b, n: None)
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_teacher(m, conn, "Неизвестный П.П.")
+
+    assert "не найден" in m.answers[-1].lower()
+    assert db.get_teacher(conn, CHAT_PEER) is None
+
+
+@pytest.mark.asyncio
+async def test_teacher_empty_divisions(admin_ids, conn, patch_base, monkeypatch):
+    monkeypatch.setattr(schedule_api, "find_teacher", lambda b, n: {"id": "uuid-x", "name": "Без Пар", "divisions": []})
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_teacher(m, conn, "Без Пар")
+
+    assert "нет привязанных подразделений" in m.answers[-1].lower()
+    assert db.get_teacher(conn, CHAT_PEER) is None
+
+
+@pytest.mark.asyncio
+async def test_teacher_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=999)
+    await handlers.cmd_teacher(m, conn, "Юнева Н.Д.")
+    assert "нет прав" in m.answers[-1].lower()
+
+
+# ============================================================
+# Обновлённые команды (сущности)
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_where_teacher(conn):
+    db.add_teacher(conn, CHAT_PEER, "uuid-1", "Юнева Наталья Дмитриевна")
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where(m, conn)
+    assert "Преподаватель: Юнева Наталья Дмитриевна" in m.answers[-1]
+
+
+@pytest.mark.asyncio
+async def test_status_teacher(admin_ids, conn):
+    db.add_teacher(conn, CHAT_PEER, "uuid-1", "Юнева Н.Д.")
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_status(m, conn)
+    assert "Преподаватель: Юнева Н.Д." in m.answers[-1]
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_teacher(admin_ids, conn):
+    db.add_teacher(conn, CHAT_PEER, "uuid-1", "Юнева Н.Д.")
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_unsubscribe(m, conn)
+    assert db.get_teacher(conn, CHAT_PEER) is None
+    assert "/teacher" in m.answers[-1]
+
+
+@pytest.mark.asyncio
+async def test_test_command_teacher(admin_ids, conn, patch_base, patch_send, monkeypatch):
+    db.add_teacher(conn, CHAT_PEER, "uuid-1", "Юнева Н.Д.")
+    monkeypatch.setattr(schedule_api, "get_teacher_lessons", lambda b, g, d: [])
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_test(m, conn)
+
+    assert any("Подписка: Юнева Н.Д." in a for a in m.answers)
+    # Проверяем, что _send_day тоже отработал (вызвал send_schedule_message)
+    assert len(patch_send) == 1
