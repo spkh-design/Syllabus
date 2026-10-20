@@ -119,3 +119,104 @@ async def test_unknown_handles_command_with_spaces(bot_module):
     m.text = "  /foobar  "
     await bot_module.on_unknown(m)
     m.answer.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_background_checker_only_teachers(bot_module, monkeypatch):
+    """Если в БД только преподаватели, цикл не должен падать и должен их проверить."""
+    import scheduler
+
+    # Настраиваем моки
+    monkeypatch.setattr(bot_module.db, "should_run_daily_cleanup", lambda c: False)
+
+    async def fake_bell(conn, api, **kw):
+        pass
+
+    monkeypatch.setattr(bot_module, "run_bell_checks", fake_bell)
+
+    monkeypatch.setattr(scheduler, "refresh_base_info_if_needed", lambda c, b: {"mock": "base"})
+
+    # 0 групп
+    monkeypatch.setattr(bot_module.db, "get_all_groups", lambda c, only_active=True: [])
+    # 1 препод
+    monkeypatch.setattr(
+        bot_module.db,
+        "get_all_teachers",
+        lambda c, only_active=True: [{"peer_id": 2000000002, "teacher_uuid": "uuid-1", "teacher_name": "Юнева"}],
+    )
+
+    # Мокаем сам цикл проверки препода
+    called_teacher = []
+
+    def fake_teacher_cycle(c, b, uuid, **kw):
+        called_teacher.append(uuid)
+        return []
+
+    monkeypatch.setattr(scheduler, "run_teacher_check_cycle", fake_teacher_cycle)
+
+    monkeypatch.setattr(bot_module.db, "get_setting", lambda c, k, d: 0)
+
+    # Мокаем asyncio.sleep, чтобы выйти из бесконечного цикла после 1 итерации
+    class StopLoop(Exception):
+        pass
+
+    async def fake_sleep(seconds):
+        raise StopLoop()
+
+    monkeypatch.setattr(bot_module.asyncio, "sleep", fake_sleep)
+
+    # Запускаем
+    try:
+        await bot_module.background_checker()
+    except StopLoop:
+        pass
+
+    assert "uuid-1" in called_teacher
+
+
+@pytest.mark.asyncio
+async def test_background_checker_only_groups(bot_module, monkeypatch):
+    """Если в БД только группы, преподаватели не должны ломать цикл."""
+    import scheduler
+
+    monkeypatch.setattr(bot_module.db, "should_run_daily_cleanup", lambda c: False)
+
+    async def fake_bell(conn, api, **kw):
+        pass
+
+    monkeypatch.setattr(bot_module, "run_bell_checks", fake_bell)
+    monkeypatch.setattr(scheduler, "refresh_base_info_if_needed", lambda c, b: {"mock": "base"})
+
+    # 1 группа
+    monkeypatch.setattr(
+        bot_module.db,
+        "get_all_groups",
+        lambda c, only_active=True: [{"peer_id": 2000000002, "group_uuid": "grp-1", "group_name": "419"}],
+    )
+    # 0 преподавателей
+    monkeypatch.setattr(bot_module.db, "get_all_teachers", lambda c, only_active=True: [])
+
+    called_group = []
+
+    def fake_group_cycle(c, b, uuid, **kw):
+        called_group.append(uuid)
+        return []
+
+    monkeypatch.setattr(scheduler, "run_check_cycle", fake_group_cycle)
+
+    monkeypatch.setattr(bot_module.db, "get_setting", lambda c, k, d: 0)
+
+    class StopLoop(Exception):
+        pass
+
+    async def fake_sleep(seconds):
+        raise StopLoop()
+
+    monkeypatch.setattr(bot_module.asyncio, "sleep", fake_sleep)
+
+    try:
+        await bot_module.background_checker()
+    except StopLoop:
+        pass
+
+    assert "grp-1" in called_group
