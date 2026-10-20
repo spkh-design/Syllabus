@@ -103,37 +103,32 @@ def _current_monday(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
-async def _resolve_group_or_reply(message: Message, conn, args: str = "") -> tuple[int | None, dict | None, str]:
-    """Определяет группу для команды и возвращает (peer_id, group, cleaned_args).
-
-    Если определить не удалось — отправляет пользователю подсказку
-    и возвращает (None, None, args).
-
-    Если группа определена, но не зарегистрирована — отправляет сообщение
-    «беседа не зарегистрирована» и возвращает (peer_id, None, cleaned_args).
-    """
+async def _resolve_entity_or_reply(message: Message, conn, args: str = "") -> tuple[int | None, dict | None, str]:
+    """Определяет группу или преподавателя для команды и возвращает (peer_id, entity, cleaned_args)."""
     explicit_peer, cleaned_args = parse_peer_arg(args or "")
     peer_id = resolve_peer_id(message, conn, explicit_peer=explicit_peer)
 
     if peer_id is None:
         await message.answer(
-            "⚠️ Не удалось определить группу.\n\n"
+            "⚠️ Не удалось определить беседу.\n\n"
             "• В беседе: команда применится к текущей беседе.\n"
             "• В ЛС: укажите беседу явно — `peer=2000000000` — "
             "или выберите активную через `/use 2000000000`."
         )
         return None, None, cleaned_args
 
-    group = db.get_group(conn, peer_id)
-    if group is None:
+    entity = db.get_entity(conn, peer_id)
+    if entity is None:
         await message.answer(
             f"⚠️ Беседа `peer={peer_id}` не зарегистрирована.\n\n"
-            f"Администратор может добавить её командой:\n"
-            f"  /add_group {peer_id} СП-X yyy"
+            f"Администратор может добавить группу:\n"
+            f"  /add_group {peer_id} СП-X yyy\n"
+            f"Или преподавателя:\n"
+            f"  /teacher {peer_id} Фамилия Имя Отчество"
         )
         return peer_id, None, cleaned_args
 
-    return peer_id, group, cleaned_args
+    return peer_id, entity, cleaned_args
 
 
 # ---------- Публичные команды ----------
@@ -143,42 +138,47 @@ async def cmd_start(message: Message, conn) -> None:
     text = (
         "👋 Привет! Я бот расписания СПК.\n\n"
         "Команды:\n"
-        "  /where — какая группа сейчас отслеживается\n"
+        "  /where — какая беседа сейчас отслеживается\n"
         "  /today — расписание на сегодня\n"
         "  /tomorrow — расписание на завтра\n"
         "  /week — расписание на текущую неделю\n"
         "  /nextweek — расписание на следующую неделю\n"
         "  /groups — список всех групп\n"
+        "  /teachers — список всех преподавателей\n"
         "Админ-команды (только для администраторов):\n"
-        "  /add_group peer=N СП-X yyy — зарегистрировать беседу\n"
-        "  /remove_group peer=N — удалить регистрацию\n"
+        "  /add_group peer=N СП-X yyy — зарегистрировать беседу группы\n"
+        "  /remove_group peer=N — удалить регистрацию группы\n"
         "  /group СП-X yyy — задать группу для текущей беседы\n"
-        "  /set_curator ID — назначить куратора\n"
+        "  /add_teacher peer=N ФИО — зарегистрировать беседу преподавателя\n"
+        "  /remove_teacher peer=N — удалить регистрацию преподавателя\n"
+        "  /teacher ФИО — задать преподавателя для текущей беседы\n"
+        "  /set_curator ID — назначить куратора (только для групп)\n"
         "  /curator — показать текущего куратора\n"
         "  /interval 30 — интервал проверки\n"
         "  /status — что настроено\n"
-        "  /subscribers — подписчики\n"
+        "  /subscribers — все подписчики (группы и преподаватели)\n"
         "  /week_skip — пометить неделю как объявленную\n"
         "  /unsubscribe — отписаться\n\n"
         "В беседе команды применяются к текущей беседе. "
-        "В ЛС — к группе, выбранной через /use или указанной как peer=N."
+        "В ЛС — к беседе, выбранной через /use или указанной как peer=N."
     )
     await _reply(message, text)
 
 
 async def cmd_where(message: Message, conn) -> None:
-    peer_id, group, _ = await _resolve_group_or_reply(message, conn)
-    if group is None:
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
         return
-    await message.answer(f"📍 `peer={peer_id}`\n" f"Группа: {group['division']} / {group['group_name']}")
+    if entity["type"] == "group":
+        await message.answer(f"📍 `peer={peer_id}`\nГруппа: {entity['division']} / {entity['group_name']}")
+    else:
+        await message.answer(f"📍 `peer={peer_id}`\nПреподаватель: {entity['teacher_name']}")
 
 
 async def _send_day(message: Message, conn, target: date) -> None:
-    peer_id, group, _ = await _resolve_group_or_reply(message, conn)
-    if group is None:
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
         return
-
-    group_uuid = group["group_uuid"]
 
     base = _load_base(conn)
     if base is None:
@@ -186,13 +186,19 @@ async def _send_day(message: Message, conn, target: date) -> None:
         return
 
     try:
-        lessons = schedule_api.get_group_lessons(base, group_uuid, target)
+        if entity["type"] == "group":
+            lessons = schedule_api.get_group_lessons(base, entity["group_uuid"], target)
+            home = schedule_api.home_territory(base, entity["group_uuid"])
+            unique_id = entity["group_uuid"]
+        else:
+            lessons = schedule_api.get_teacher_lessons(base, entity["teacher_uuid"], target)
+            home = ""
+            unique_id = entity["teacher_uuid"]
     except schedule_api.ScheduleAPIError as e:
         logger.error("Ошибка API: %s", e)
         await message.answer("⚠️ Не удалось получить расписание. Попробуйте позже.")
         return
 
-    home = schedule_api.home_territory(base, group_uuid)
     weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][target.weekday()]
     text = f"📅 Расписание на {target.strftime('%d.%m.%Y')} ({weekday})"
 
@@ -204,23 +210,28 @@ async def _send_day(message: Message, conn, target: date) -> None:
         lessons=lessons,
         home_territory=home,
     )
-    await send_schedule_message(message.ctx_api, peer_id, msg, conn=conn, group_uuid=group_uuid)
+    await send_schedule_message(message.ctx_api, peer_id, msg, conn=conn, group_uuid=unique_id)
 
 
 async def _send_week(message: Message, conn, monday: date) -> None:
-    peer_id, group, _ = await _resolve_group_or_reply(message, conn)
-    if group is None:
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
         return
-
-    group_uuid = group["group_uuid"]
 
     base = _load_base(conn)
     if base is None:
         await message.answer("⚠️ Не удалось получить справочники.")
         return
 
-    week = schedule_api.get_week_lessons(base, group_uuid, monday)
-    home = schedule_api.home_territory(base, group_uuid)
+    if entity["type"] == "group":
+        week = schedule_api.get_week_lessons(base, entity["group_uuid"], monday)
+        home = schedule_api.home_territory(base, entity["group_uuid"])
+        unique_id = entity["group_uuid"]
+    else:
+        week = schedule_api.get_teacher_week_lessons(base, entity["teacher_uuid"], monday)
+        home = ""
+        unique_id = entity["teacher_uuid"]
+
     text = (
         f"📅 Расписание на неделю "
         f"с {monday.strftime('%d.%m.%Y')} "
@@ -235,7 +246,7 @@ async def _send_week(message: Message, conn, monday: date) -> None:
         week=week,
         home_territory=home,
     )
-    await send_schedule_message(message.ctx_api, peer_id, msg, conn=conn, group_uuid=group_uuid)
+    await send_schedule_message(message.ctx_api, peer_id, msg, conn=conn, group_uuid=unique_id)
 
 
 async def cmd_today(message: Message, conn) -> None:
@@ -261,23 +272,22 @@ async def cmd_status(message: Message, conn) -> None:
     if not await _require_admin(message):
         return
 
-    peer_id, group, _ = await _resolve_group_or_reply(message, conn)
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
 
     lines = ["📊 Статус:"]
 
-    if group is None:
-        lines.append("  Группа: не определена или не зарегистрирована")
+    if entity is None:
+        lines.append("  Сущность: не определена или не зарегистрирована")
     else:
         base_age = db.base_info_age_hours(conn)
         lines.append(f"  peer_id: {peer_id}")
-        lines.append(f"  Группа: {group['division']} / {group['group_name']}")
-        curator = group.get("curator_id")
-        lines.append(f"  Куратор: {curator if curator else '—'}")
-        lines.append(f"  Активна: {'да' if group['is_active'] else 'нет'}")
-        if base_age is None:
-            lines.append("  Справочники: не загружены")
+        if entity["type"] == "group":
+            lines.append(f"  Группа: {entity['division']} / {entity['group_name']}")
+            curator = entity.get("curator_id")
+            lines.append(f"  Куратор: {curator if curator else '—'}")
         else:
-            lines.append(f"  Справочники: обновлены {base_age:.1f} ч назад")
+            lines.append(f"  Преподаватель: {entity['teacher_name']}")
+        lines.append(f"  Активна: {'да' if entity['is_active'] else 'нет'}")
 
     # Всего групп в системе
     all_groups = db.get_all_groups(conn, only_active=False)
@@ -360,16 +370,21 @@ async def cmd_group(message: Message, conn, args: str) -> None:
 
 
 async def cmd_unsubscribe(message: Message, conn) -> None:
-    """Удаляет регистрацию группы, к которой относится команда."""
     if not await _require_admin(message):
         return
 
-    peer_id, group, _ = await _resolve_group_or_reply(message, conn)
-    if group is None:
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
         return
 
-    db.remove_group(conn, peer_id)
-    await message.answer(f"✅ Отписка выполнена для `peer={peer_id}`.\n" f"Чтобы снова подписаться: /group СП-X yyy")
+    if entity["type"] == "group":
+        db.remove_group(conn, peer_id)
+        await message.answer(f"✅ Отписка выполнена для `peer={peer_id}`.\nЧтобы снова подписаться: /group СП-X yyy")
+    else:
+        db.remove_teacher(conn, peer_id)
+        await message.answer(
+            f"✅ Отписка выполнена для `peer={peer_id}`.\nЧтобы снова подписаться: /teacher Фамилия Имя Отчество"
+        )
 
 
 async def cmd_interval(message: Message, conn, args: str) -> None:
@@ -399,12 +414,13 @@ async def cmd_test(message: Message, conn) -> None:
     if not await _require_admin(message):
         return
 
-    peer_id, group, _ = await _resolve_group_or_reply(message, conn)
-    if group is None:
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
         return
 
     await message.answer(
-        f"🔔 Тестовое уведомление. Если вы его видите — бот работает.\n" f"Группа: {group['group_name']}"
+        f"🔔 Тестовое уведомление. Если вы его видите — бот работает.\n"
+        f"Подписка: {entity['group_name'] if entity['type'] == 'group' else entity['teacher_name']}"
     )
     await cmd_today(message, conn)
 
@@ -435,16 +451,26 @@ async def cmd_subscribers(message: Message, conn) -> None:
         return
 
     groups = db.get_all_groups(conn, only_active=False)
-    if not groups:
-        await message.answer("⚠️ Нет зарегистрированных групп.")
+    teachers = db.get_all_teachers(conn, only_active=False)
+
+    if not groups and not teachers:
+        await message.answer("⚠️ Нет зарегистрированных бесед.")
         return
 
-    lines = [f"👥 Группы ({len(groups)}):"]
-    for g in groups:
-        status = "✅" if g["is_active"] else "⏸"
-        curator = g.get("curator_id")
-        curator_str = f", куратор {curator}" if curator else ""
-        lines.append(f"  {status} `peer={g['peer_id']}` — " f"{g['division']} / {g['group_name']}{curator_str}")
+    lines = []
+    if groups:
+        lines.append(f"👥 Группы ({len(groups)}):")
+        for g in groups:
+            status = "✅" if g["is_active"] else "⏸"
+            curator = g.get("curator_id")
+            curator_str = f", куратор {curator}" if curator else ""
+            lines.append(f"  {status} `peer={g['peer_id']}` — {g['division']} / {g['group_name']}{curator_str}")
+
+    if teachers:
+        lines.append(f"👨‍🏫 Преподаватели ({len(teachers)}):")
+        for t in teachers:
+            status = "✅" if t["is_active"] else "⏸"
+            lines.append(f"  {status} `peer={t['peer_id']}` — {t['teacher_name']}")
 
     await message.answer("\n".join(lines))
 
@@ -468,12 +494,12 @@ async def cmd_week_skip(message: Message, conn, args: str = "") -> None:
         )
         return
 
-    group = db.get_group(conn, peer_id)
-    if group is None:
-        await message.answer(f"⚠️ Беседа `peer={peer_id}` не зарегистрирована.\n" f"Сначала: /group СП-X yyy")
+    entity = db.get_entity(conn, peer_id)
+    if entity is None:
+        await message.answer(f"⚠️ Беседа `peer={peer_id}` не зарегистрирована.")
         return
 
-    group_uuid = group["group_uuid"]
+    unique_id = entity.get("group_uuid") or entity.get("teacher_uuid")
     cleaned_args = cleaned_args.strip()
 
     if cleaned_args:
@@ -495,13 +521,216 @@ async def cmd_week_skip(message: Message, conn, args: str = "") -> None:
 
     week_start = d - timedelta(days=d.weekday())
 
-    db.set_week_announced(conn, group_uuid, week_start, is_full=False)
+    db.set_week_announced(conn, unique_id, week_start, is_full=False)
     await message.answer(
         f"✅ Неделя с {week_start.strftime('%d.%m.%Y')} помечена "
         f"как «объявленная» для `peer={peer_id}`.\n"
         f"Бот не будет присылать полное расписание этой недели "
         f"автоматически. Если хотите увидеть его сейчас — /week."
     )
+
+
+async def cmd_use(message: Message, conn, args: str) -> None:
+    """Выбор активной группы для команд в ЛС.
+
+    Синтаксис: /use 2000000000
+    """
+    if not is_group_chat(message.peer_id) and not is_personal_chat(message.peer_id):
+        # Теоретически сюда не попадём, но на всякий случай
+        pass
+
+    if is_group_chat(message.peer_id):
+        await message.answer(
+            "ℹ️ Команда `/use` работает только в личных сообщениях.\n"
+            "В беседе команды применяются к текущей беседе автоматически."
+        )
+        return
+
+    peer_id, cleaned = parse_peer_arg(args or "")
+    if peer_id is None:
+        cleaned = cleaned.strip()
+        if not cleaned.isdigit():
+            await message.answer(
+                "❌ Формат: /use 2000000000\n" "Число — ID беседы (можно узнать командой /whoami в этой беседе)."
+            )
+            return
+        peer_id = int(cleaned)
+
+    entity = db.get_entity(conn, peer_id)  # <--- ВМЕСТО db.get_group
+    if entity is None:
+        await message.answer(
+            f"⚠️ Беседа `peer={peer_id}` не зарегистрирована.\n"
+            f"Сначала админ должен добавить её: /add_group или /add_teacher"
+        )
+        return
+
+    db.set_user_session(conn, message.from_id, peer_id)
+
+    if entity["type"] == "group":
+        info = f"{entity['division']} / {entity['group_name']}"
+    else:
+        info = f"Преподаватель: {entity['teacher_name']}"
+
+    await message.answer(
+        f"✅ Активная беседа: `peer={peer_id}`\n"
+        f"   {info}\n\n"
+        f"Теперь команды `/today`, `/week`, `/status` и т.д. будут "
+        f"применяться к этой беседе."
+    )
+
+
+# ============================================================
+# Multi-tenant: управление преподавателями
+# ============================================================
+
+
+async def cmd_teacher(message: Message, conn, args: str) -> None:
+    """Регистрирует беседу как преподавателя.
+
+    Синтаксис:
+        В беседе:  /teacher Фамилия Имя Отчество
+        В ЛС:      /teacher peer=2000000000 Фамилия Имя Отчество
+    """
+    if not await _require_admin(message):
+        return
+
+    explicit_peer, cleaned_args = parse_peer_arg(args or "")
+
+    if explicit_peer is not None:
+        peer_id = explicit_peer
+    elif is_group_chat(message.peer_id):
+        peer_id = message.peer_id
+    else:
+        await message.answer("❌ В ЛС нужно указать беседу явно:\n  /teacher peer=2000000000 Фамилия Имя Отчество")
+        return
+
+    teacher_name = cleaned_args.strip()
+    if not teacher_name:
+        await message.answer("❌ Формат: /teacher Фамилия Имя Отчество")
+        return
+
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники. Попробуйте позже.")
+        return
+
+    found = schedule_api.find_teacher(base, teacher_name)
+    if found is None:
+        await message.answer(f"❌ Преподаватель «{teacher_name}» не найден в базе колледжа.")
+        return
+
+    if not found.get("divisions"):
+        await message.answer(f"❌ У преподавателя «{teacher_name}» нет привязанных подразделений (он не ведёт пары).")
+        return
+
+    db.add_teacher(conn, peer_id=peer_id, teacher_uuid=found["id"], teacher_name=found["name"])
+
+    await message.answer(
+        f"✅ Преподаватель зарегистрирован:\n"
+        f"   peer_id: {peer_id}\n"
+        f"   ФИО: {found['name']}\n\n"
+        f"Бот будет присылать расписание и уведомления в эту беседу."
+    )
+
+
+async def cmd_add_teacher(message: Message, conn, args: str) -> None:
+    """Регистрирует беседу как преподавателя.
+
+    Синтаксис:
+        В беседе:  /add_teacher Фамилия Имя Отчество
+        В ЛС:      /add_teacher peer=2000000000 Фамилия Имя Отчество
+    """
+    if not await _require_admin(message):
+        return
+
+    explicit_peer, cleaned_args = parse_peer_arg(args or "")
+
+    if explicit_peer is not None:
+        peer_id = explicit_peer
+    elif is_group_chat(message.peer_id):
+        peer_id = message.peer_id
+    else:
+        await message.answer("❌ В ЛС нужно указать беседу явно:\n  /add_teacher peer=2000000000 Фамилия Имя Отчество")
+        return
+
+    teacher_name = cleaned_args.strip()
+    if not teacher_name:
+        await message.answer(
+            "❌ Формат: /add_teacher Фамилия Имя Отчество\nВ ЛС: /add_teacher peer=2000000000 Фамилия Имя Отчество"
+        )
+        return
+
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники. Попробуйте позже.")
+        return
+
+    found = schedule_api.find_teacher(base, teacher_name)
+    if found is None:
+        await message.answer(f"❌ Преподаватель «{teacher_name}» не найден в базе колледжа.")
+        return
+
+    if not found.get("divisions"):
+        await message.answer(f"❌ У преподавателя «{teacher_name}» нет привязанных подразделений (он не ведёт пары).")
+        return
+
+    db.add_teacher(conn, peer_id=peer_id, teacher_uuid=found["id"], teacher_name=found["name"])
+
+    await message.answer(
+        f"✅ Преподаватель зарегистрирован:\n"
+        f"   peer_id: {peer_id}\n"
+        f"   ФИО: {found['name']}\n\n"
+        f"Бот будет присылать расписание и уведомления в эту беседу."
+    )
+
+
+async def cmd_remove_teacher(message: Message, conn, args: str) -> None:
+    """Удаляет регистрацию преподавателя."""
+    if not await _require_admin(message):
+        return
+
+    explicit_peer, _ = parse_peer_arg(args or "")
+
+    if explicit_peer is not None:
+        peer_id = explicit_peer
+    elif is_group_chat(message.peer_id):
+        peer_id = message.peer_id
+    else:
+        await message.answer("❌ В ЛС нужно указать беседу:\n  /remove_teacher peer=2000000000")
+        return
+
+    teacher = db.get_teacher(conn, peer_id)
+    if teacher is None:
+        await message.answer(f"⚠️ Беседа `peer={peer_id}` не зарегистрирована как преподаватель.")
+        return
+
+    db.remove_teacher(conn, peer_id)
+    await message.answer(f"✅ Преподаватель `peer={peer_id}` ({teacher['teacher_name']}) удалён из бота.")
+
+
+async def cmd_teachers(message: Message, conn) -> None:
+    """Список всех зарегистрированных преподавателей. Только для админов."""
+    if not await _require_admin(message):
+        return
+
+    teachers = db.get_all_teachers(conn, only_active=False)
+    if not teachers:
+        await message.answer("📋 Преподавателей нет.")
+        return
+
+    active_session = db.get_user_session(conn, message.from_id) if is_personal_chat(message.peer_id) else None
+
+    lines = [f"👨‍🏫 Преподаватели ({len(teachers)}):"]
+    for t in teachers:
+        status = "✅" if t["is_active"] else "⏸"
+        marker = " 👈" if active_session == t["peer_id"] else ""
+        lines.append(f"  {status} `peer={t['peer_id']}` — {t['teacher_name']}{marker}")
+
+    if is_personal_chat(message.peer_id):
+        lines.append("")
+        lines.append("Выбрать преподавателя: /use <peer_id>")
+
+    await message.answer("\n".join(lines))
 
 
 # ============================================================
@@ -590,51 +819,6 @@ async def cmd_remove_group(message: Message, conn, args: str) -> None:
     )
 
 
-async def cmd_use(message: Message, conn, args: str) -> None:
-    """Выбор активной группы для команд в ЛС.
-
-    Синтаксис: /use 2000000000
-    """
-    if not is_group_chat(message.peer_id) and not is_personal_chat(message.peer_id):
-        # Теоретически сюда не попадём, но на всякий случай
-        pass
-
-    if is_group_chat(message.peer_id):
-        await message.answer(
-            "ℹ️ Команда `/use` работает только в личных сообщениях.\n"
-            "В беседе команды применяются к текущей беседе автоматически."
-        )
-        return
-
-    peer_id, cleaned = parse_peer_arg(args or "")
-    # Если написали просто `/use 2000000000` — peer_id будет None,
-    # а cleaned = "2000000000". Разбираем вручную.
-    if peer_id is None:
-        cleaned = cleaned.strip()
-        if not cleaned.isdigit():
-            await message.answer(
-                "❌ Формат: /use 2000000000\n" "Число — ID беседы (можно узнать командой /whoami в этой беседе)."
-            )
-            return
-        peer_id = int(cleaned)
-
-    group = db.get_group(conn, peer_id)
-    if group is None:
-        await message.answer(
-            f"⚠️ Беседа `peer={peer_id}` не зарегистрирована.\n"
-            f"Сначала админ должен добавить её: /add_group peer={peer_id} СП-X yyy"
-        )
-        return
-
-    db.set_user_session(conn, message.from_id, peer_id)
-    await message.answer(
-        f"✅ Активная группа: `peer={peer_id}`\n"
-        f"   {group['division']} / {group['group_name']}\n\n"
-        f"Теперь команды `/today`, `/week`, `/status` и т.д. будут "
-        f"применяться к этой группе."
-    )
-
-
 async def cmd_groups(message: Message, conn) -> None:
     """Список всех зарегистрированных групп. Только для админов."""
     if not await _require_admin(message):
@@ -715,7 +899,7 @@ async def cmd_set_curator(message: Message, conn, args: str) -> None:
 
     if peer_id is None:
         await message.answer(
-            "❌ Не удалось определить группу.\n"
+            "❌ Не удалось определить беседу.\n"
             "В ЛС: укажите явно — `/set_curator 123456 peer=2000000000`\n"
             "или сначала выберите через `/use 2000000000`."
         )
@@ -723,6 +907,11 @@ async def cmd_set_curator(message: Message, conn, args: str) -> None:
 
     group = db.get_group(conn, peer_id)
     if group is None:
+        # Проверяем, может это преподаватель?
+        teacher = db.get_teacher(conn, peer_id)
+        if teacher is not None:
+            await message.answer("👤 У преподавателя нет куратора.")
+            return
         await message.answer(f"⚠️ Беседа `peer={peer_id}` не зарегистрирована.")
         return
 
@@ -746,10 +935,15 @@ async def cmd_set_curator(message: Message, conn, args: str) -> None:
 
 async def cmd_curator(message: Message, conn) -> None:
     """Показывает текущего куратора группы."""
-    peer_id, group, _ = await _resolve_group_or_reply(message, conn)
-    if group is None:
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
         return
 
+    if entity["type"] == "teacher":
+        await message.answer(f"👤 У преподавателя нет куратора.")
+        return
+
+    group = entity  # для совместимости с нижним кодом
     curator = group.get("curator_id")
     if curator is None:
         await message.answer(
@@ -786,7 +980,7 @@ async def cmd_bell(message: Message, conn, args: str) -> None:
         /bell 21 октября 2026
         /bell 21.10.26 peer=2000000000  (в ЛС)
     """
-    peer_id, group, cleaned_args = await _resolve_group_or_reply(message, conn, args or "")
+    peer_id, group, cleaned_args = await _resolve_entity_or_reply(message, conn, args or "")
     if group is None:
         return
 
