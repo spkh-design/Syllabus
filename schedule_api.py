@@ -275,3 +275,65 @@ def home_territory(base: dict, group_uuid: str) -> str:
                 if d["id"] == div_id:
                     return d["name"]
     return ""
+
+
+def find_teacher(base: dict, name: str) -> Optional[dict]:
+    """Ищет преподавателя по точному ФИО."""
+    target_name = name.strip().lower()
+    for t in base.get("teachers", []):
+        if t["name"].strip().lower() == target_name:
+            return t
+    return None
+
+
+def get_teacher_lessons(base: dict, teacher_uuid: str, target_date: date_type) -> list[dict]:
+    """Возвращает пары преподавателя на дату.
+
+    В поле "teacher" подставляется "Группа N" для отображения в рендерере.
+    """
+    lookup = build_lookup(base)
+    payload = fetch_schedule(target_date)
+
+    days = payload.get("schedule", {}).get("data", {}).get("schedule", [])
+    day = None
+    for d in days:
+        d_date = datetime.fromtimestamp(d["date"] / 1000, tz=SCHEDULE_TZ).date()
+        if d_date == target_date:
+            day = d
+            break
+
+    if day is None:
+        return []
+
+    # Фильтруем по преподавателю
+    lessons = [l for l in day.get("lessons", []) if l["teacher"] == teacher_uuid]
+    lessons.sort(key=lambda l: (l["number_lesson"], l["subgroup"]))
+
+    result = []
+    for l in lessons:
+        group_name = lookup["groups"].get(l["group"], "—")
+        result.append(
+            {
+                "number": l["number_lesson"],
+                "subgroup": l["subgroup"],
+                "discipline": lookup["disciplines"].get(l["discipline"], "—"),
+                "teacher": f"Группа {group_name}",  # Вместо ФИО препода
+                "auditoria": lookup["auditoria"].get(l["auditoria"], "—"),
+                "lesson_type": lookup["lesson_types"].get(l["lesson_type"], "—"),
+                "territory": lookup["territories"].get(l.get("territory"), ""),
+            }
+        )
+    return result
+
+
+def get_teacher_week_lessons(base: dict, teacher_uuid: str, start_date: date_type) -> dict[date_type, list[dict]]:
+    """Возвращает {дата: [пары]} для 7 дней начиная со start_date."""
+    result: dict[date_type, list[dict]] = {}
+    for offset in range(7):
+        d = start_date + timedelta(days=offset)
+        try:
+            result[d] = get_teacher_lessons(base, teacher_uuid, d)
+        except ScheduleAPIError as e:
+            logger.warning("Не удалось получить расписание препода на %s: %s", d, e)
+            result[d] = []
+    return result
