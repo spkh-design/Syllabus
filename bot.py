@@ -452,7 +452,14 @@ async def background_checker():
             logger.exception("Ошибка в фоновом цикле: %s", e)
 
         interval = db.get_setting(conn, "check_interval_minutes", CHECK_INTERVAL_MINUTES)
-        logger.info(">>> checker: спим %s мин", interval)
+        n_groups = len(db.get_all_groups(conn, only_active=True))
+        n_teachers = len(db.get_all_teachers(conn, only_active=True))
+        logger.info(
+            ">>> checker: цикл завершен (активных групп: %d, преподавателей: %d). Спим %s мин",
+            n_groups,
+            n_teachers,
+            interval,
+        )
         await asyncio.sleep(int(interval) * 60)
 
 
