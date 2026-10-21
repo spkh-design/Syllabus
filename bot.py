@@ -34,6 +34,7 @@ from handlers import (
     cmd_curator,
     cmd_group,
     cmd_groups,
+    cmd_help,
     cmd_interval,
     cmd_metrics,
     cmd_nextweek,
@@ -67,6 +68,37 @@ _base_cache: dict | None = None
 
 
 bot = Bot(token=VK_TOKEN)
+
+
+# Словарь: "команда" -> (функция, аргумент_или_None)
+_BUTTON_HANDLERS = {
+    # Публичные команды
+    "/today": (cmd_today, None),
+    "/tomorrow": (cmd_tomorrow, None),
+    "/week": (cmd_week, None),
+    "/nextweek": (cmd_nextweek, None),
+    "/where": (cmd_where, None),
+    "/bell": (cmd_bell, ""),
+    # Админские команды (без аргументов)
+    "/curator": (cmd_curator, None),
+    "/status": (cmd_status, None),
+    "/unsubscribe": (cmd_unsubscribe, None),
+    "/groups": (cmd_groups, None),
+    "/teachers": (cmd_teachers, None),
+    "/metrics": (cmd_metrics, None),
+    "/subscribers": (cmd_subscribers, None),
+    # Админские команды (требуют аргументов — передаем "", чтобы вывести подсказку)
+    "/add_group": (cmd_add_group, ""),
+    "/add_teacher": (cmd_add_teacher, ""),
+    "/remove_group": (cmd_remove_group, ""),
+    "/remove_teacher": (cmd_remove_teacher, ""),
+    "/interval": (cmd_interval, ""),
+    "/week_skip": (cmd_week_skip, ""),
+    "/use": (cmd_use, ""),
+    "/set_curator": (cmd_set_curator, ""),
+    "/group": (cmd_group, ""),
+    "/teacher": (cmd_teacher, ""),
+}
 
 
 # ---------- Сохраняем все входящие сообщения ----------
@@ -176,9 +208,14 @@ async def save_incoming_raw(event: dict) -> None:
 # ---------- Обработчики команд ----------
 
 
-@bot.on.message(text=["/start", "/help", "начать", "start"])
+@bot.on.message(text=["/start", "начать", "start"])
 async def on_start(message: Message):
     await cmd_start(message, conn)
+
+
+@bot.on.message(text="/help")
+async def on_help(message: Message):
+    await cmd_help(message, conn)
 
 
 @bot.on.message(text="/group <args>")
@@ -318,6 +355,32 @@ async def on_curator(message: Message):
 @bot.on.message(text=["/bell", "/bell <args>"])
 async def on_bell(message: Message, args: str = ""):
     await cmd_bell(message, conn, args)
+
+
+@bot.on.message()
+async def on_keyboard_payload(message: Message):
+    """Обрабатывает нажатия на кнопки (payload)."""
+    if not message.payload or not isinstance(message.payload, dict):
+        return  # Обычное сообщение, не наша забота
+
+    cmd = message.payload.get("cmd")
+    if not cmd:
+        return
+
+    entry = _BUTTON_HANDLERS.get(cmd)
+    if not entry:
+        logger.warning("Неизвестный payload от кнопки: %s", cmd)
+        return
+
+    func, arg = entry
+
+    try:
+        if arg is None:
+            await func(message, conn)
+        else:
+            await func(message, conn, arg)
+    except Exception as e:
+        logger.exception("Ошибка при обработке кнопки %s: %s", cmd, e)
 
 
 @bot.on.message()
