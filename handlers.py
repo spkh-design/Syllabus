@@ -136,34 +136,63 @@ async def _resolve_entity_or_reply(message: Message, conn, args: str = "") -> tu
 
 
 async def cmd_start(message: Message, conn) -> None:
+    """Вызывается по /start. Отправляет Reply-клавиатуру в ЛС или Inline в беседе."""
+    is_pm = is_personal_chat(message.peer_id)
+
     text = (
         "👋 Привет! Я бот расписания СПК.\n\n"
-        "Команды:\n"
-        "  /where — какая беседа сейчас отслеживается\n"
-        "  /today — расписание на сегодня\n"
-        "  /tomorrow — расписание на завтра\n"
-        "  /week — расписание на текущую неделю\n"
-        "  /nextweek — расписание на следующую неделю\n"
-        "  /groups — список всех групп\n"
-        "  /teachers — список всех преподавателей\n"
-        "Админ-команды (только для администраторов):\n"
-        "  /add_group peer=N СП-X yyy — зарегистрировать беседу группы\n"
-        "  /remove_group peer=N — удалить регистрацию группы\n"
-        "  /group СП-X yyy — задать группу для текущей беседы\n"
-        "  /add_teacher peer=N ФИО — зарегистрировать беседу преподавателя\n"
-        "  /remove_teacher peer=N — удалить регистрацию преподавателя\n"
-        "  /teacher ФИО — задать преподавателя для текущей беседы\n"
-        "  /set_curator ID — назначить куратора (только для групп)\n"
-        "  /curator — показать текущего куратора\n"
-        "  /interval 30 — интервал проверки\n"
-        "  /status — что настроено\n"
-        "  /subscribers — все подписчики (группы и преподаватели)\n"
-        "  /week_skip — пометить неделю как объявленную\n"
-        "  /unsubscribe — отписаться\n\n"
-        "В беседе команды применяются к текущей беседе. "
-        "В ЛС — к беседе, выбранной через /use или указанной как peer=N."
+        "Используй кнопки внизу для быстрого доступа к командам, "
+        "или напиши /help для просмотра всех возможностей."
     )
-    await _reply(message, text)
+
+    if is_pm:
+        from keyboards import get_pm_reply_keyboard
+
+        await message.answer(text, keyboard=get_pm_reply_keyboard())
+    else:
+        # В беседах Reply-клавиатуру нельзя, поэтому шлём просто текст
+        await message.answer(text)
+
+
+async def cmd_help(message: Message, conn) -> None:
+    """Вызывается по /help. Отправляет Inline-клавиатуру с текстом."""
+    from keyboards import get_public_inline_keyboard, get_admin_inline_keyboard
+
+    is_admin_user = is_admin(message)
+
+    if is_admin_user:
+        text = (
+            "🛠 Помощь (Админ)\n\n"
+            "Кнопки под сообщением — быстрые действия.\n"
+            "Команды с аргументами (напиши текстом):\n"
+            "  /group СП-X yyy — задать группу\n"
+            "  /teacher ФИО — задать препода\n"
+            "  /add_group СП-X yyy — добавить беседу группы\n"
+            "  /add_teacher ФИО — добавить беседу препода\n"
+            "  /remove_group — удалить группу\n"
+            "  /remove_teacher — удалить препода\n"
+            "  /set_curator ID — назначить куратора\n"
+            "  /interval N — интервал проверки\n"
+            "  /week_skip — пропустить неделю\n"
+            "  /use N — выбрать беседу (в ЛС)\n"
+            "  /metrics — метрики"
+        )
+        kb = get_admin_inline_keyboard()
+    else:
+        text = (
+            "📖 Помощь\n\n"
+            "Кнопки под сообщением — быстрые действия.\n"
+            "Команды:\n"
+            "  /today — расписание на сегодня\n"
+            "  /tomorrow — расписание на завтра\n"
+            "  /week — на текущую неделю\n"
+            "  /nextweek — на следующую неделю\n"
+            "  /bell — расписание звонков\n"
+            "  /where — какая беседа отслеживается"
+        )
+        kb = get_public_inline_keyboard()
+
+    await message.answer(text, keyboard=kb)
 
 
 async def cmd_where(message: Message, conn) -> None:
