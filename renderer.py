@@ -136,6 +136,8 @@ def _shorten_fio(fio: str) -> str:
     if not fio:
         return "—"
     fio = fio.strip()
+    if fio.startswith("Группа "):
+        return fio
     parts = fio.split()
     if len(parts) == 1:
         return parts[0]

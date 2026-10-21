@@ -420,6 +420,178 @@ def run_check_cycle(
     return messages
 
 
+# ============================================================
+# Проверка преподавателей
+# ============================================================
+
+
+def check_teacher(
+    conn, base, teacher_uuid, target_date, *, now=None, skip_if_passed_today=True
+) -> Optional[ScheduleMessage]:
+    try:
+        new_lessons = schedule_api.get_teacher_lessons(base, teacher_uuid, target_date)
+    except schedule_api.ScheduleAPIError as e:
+        logger.warning("API-ошибка (препод) на %s: %s", target_date, e)
+        _increment_metric(conn, "metrics_errors")
+        return None
+
+    old_snapshot = db.get_snapshot(conn, teacher_uuid, target_date)
+    if old_snapshot is None:
+        if new_lessons:
+            db.save_snapshot(conn, teacher_uuid, target_date, new_lessons)
+        return None
+
+    old_lessons = old_snapshot["lessons"]
+    if old_snapshot["hash"] == _hash(new_lessons):
+        return None
+
+    changes = diff_lessons(old_lessons, new_lessons)
+    if not changes:
+        db.save_snapshot(conn, teacher_uuid, target_date, new_lessons)
+        return None
+
+    db.save_snapshot(conn, teacher_uuid, target_date, new_lessons)
+
+    if skip_if_passed_today and now is not None and target_date == now.date():
+        last_number = max((l["number"] for l in new_lessons), default=0)
+        if _day_lessons_passed(target_date, last_number, now):
+            db.log_notification(conn, teacher_uuid, target_date, "skipped_passed", "")
+            return None
+
+    total = max(len(old_lessons), len(new_lessons), 1)
+    home = ""  # Для преподавателя нет домашнего корпуса
+
+    fallback_text = (
+        format_day_changes_full(target_date, changes, new_lessons, home)
+        if is_massive_change(changes, total)
+        else format_changes(target_date, changes, new_lessons)
+    )
+    weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][target_date.weekday()]
+    text = f"⚠️ Изменения на {target_date.strftime('%d.%m')} ({weekday})"
+
+    kind = "full" if is_massive_change(changes, total) else "diff"
+    db.log_notification(conn, teacher_uuid, target_date, kind, fallback_text[:500])
+
+    return ScheduleMessage(
+        kind="day_image",
+        text=text,
+        fallback_text=fallback_text,
+        target_date=target_date,
+        changes=changes,
+        lessons=new_lessons,
+        home_territory=home,
+    )
+
+
+def run_teacher_check_cycle(
+    conn, base: Optional[dict], teacher_uuid: str, now: Optional[datetime] = None
+) -> list[ScheduleMessage]:
+    """Аналог run_check_cycle, но для преподавателя."""
+    if now is None:
+        now = datetime.now()
+    if base is None:
+        base = db.get_base_info(conn)
+    if base is None:
+        return []
+
+    dates = should_check_now(now)
+    if not dates:
+        return []
+
+    today = now.date()
+    current_dates, next_dates = _split_dates_by_week(dates, today)
+
+    messages: list[ScheduleMessage] = []
+    week_cache: dict[date_type, dict[date_type, list[dict]]] = {}
+
+    # --- 1. Следующая неделя: объявление ---
+    if next_dates:
+        week_start = min(next_dates)
+        week = schedule_api.get_teacher_week_lessons(base, teacher_uuid, week_start)
+        week_cache[week_start] = week
+
+        existing = db.get_week_announced(conn, teacher_uuid, week_start)
+        if existing is None and not _is_first_week_of_semester(now.date()):
+            complete = _is_week_complete(week)
+            is_sunday = _is_sunday_after_13(now)
+            if complete or is_sunday:
+                home = ""
+                fallback = format_week_schedule(week_start, week, home)
+                text = (
+                    f"📅 Расписание на неделю "
+                    f"с {week_start.strftime('%d.%m.%Y')} "
+                    f"по {(week_start + timedelta(days=5)).strftime('%d.%m.%Y')}"
+                )
+                db.set_week_announced(conn, teacher_uuid, week_start, is_full=complete)
+                kind = "week_full" if complete else "week_partial"
+                db.log_notification(conn, teacher_uuid, week_start, kind, fallback[:500])
+                messages.append(
+                    ScheduleMessage(
+                        kind="week_image",
+                        text=text,
+                        fallback_text=fallback,
+                        week_start=week_start,
+                        week=week,
+                        home_territory=home,
+                    )
+                )
+
+    # --- 2. Проверяем каждую дату ---
+    changes_by_day: dict[date_type, list[Change]] = {}
+    day_messages: dict[date_type, ScheduleMessage] = {}
+
+    for d in sorted(current_dates | next_dates):
+        result = check_teacher(conn, base, teacher_uuid, d, now=now, skip_if_passed_today=True)
+        if result is None:
+            continue
+        changes_by_day[d] = result.changes
+        day_messages[d] = result
+
+    # --- 3. Группируем по неделям ---
+    def _process_week_messages_teacher(week_dates, week_start=None, week_cache=None):
+        relevant_changes = {d: c for d, c in changes_by_day.items() if d in week_dates}
+        if not relevant_changes:
+            return
+
+        if count_changed_days(relevant_changes) >= MASSIVE_DAYS_FOR_WEEK:
+            start = week_start or min(week_dates)
+            week = (week_cache or {}).get(start)
+            if week is None:
+                week = schedule_api.get_teacher_week_lessons(base, teacher_uuid, start)
+
+            home = ""
+            fallback = format_week_changes_full(start, relevant_changes, week, home)
+            text = f"⚠️ Изменения за неделю {start.strftime('%d.%m')}–{(start + timedelta(days=5)).strftime('%d.%m')}"
+            messages.append(
+                ScheduleMessage(
+                    kind="week_image",
+                    text=text,
+                    fallback_text=fallback,
+                    week_start=start,
+                    changes_by_day=relevant_changes,
+                    week=week,
+                    home_territory=home,
+                )
+            )
+            return
+
+        for d in sorted(relevant_changes):
+            msg = day_messages.get(d)
+            if msg is not None:
+                messages.append(msg)
+
+    _process_week_messages_teacher(current_dates)
+    if next_dates:
+        _process_week_messages_teacher(next_dates, week_start=min(next_dates), week_cache=week_cache)
+
+    _increment_metric(conn, "metrics_checks")
+    _increment_metric(conn, "metrics_last_check", value=datetime.now().isoformat())
+    for _ in messages:
+        _increment_metric(conn, "metrics_notifications")
+
+    return messages
+
+
 def _process_week_messages(
     messages: list[ScheduleMessage],
     changes_by_day: dict[date_type, list[Change]],

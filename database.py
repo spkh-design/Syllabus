@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS groups (
 );
 
 -- ============================================================
+-- Преподаватели, обслуживаемые ботом (одна беседа = один преподаватель)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS teachers (
+    peer_id      INTEGER PRIMARY KEY,
+    teacher_uuid TEXT NOT NULL,
+    teacher_name TEXT NOT NULL,
+    is_active    INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL
+);
+
+-- ============================================================
 -- Сессии в ЛС: у какого пользователя какая группа «активна»
 -- ============================================================
 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -524,6 +535,8 @@ def add_group(
     если он не передан явно.
     """
     with _write_lock:
+        # Удаляем преподавателя, если был (беседа либо группа, либо преподаватель)
+        conn.execute("DELETE FROM teachers WHERE peer_id = ?", (peer_id,))
         conn.execute(
             "INSERT INTO groups "
             "(peer_id, group_uuid, group_name, division, curator_id, is_active, created_at) "
@@ -613,6 +626,103 @@ def set_group_active(conn: sqlite3.Connection, peer_id: int, is_active: bool) ->
     with _write_lock:
         conn.execute("UPDATE groups SET is_active = ? WHERE peer_id = ?", (1 if is_active else 0, peer_id))
         conn.commit()
+
+
+# ============================================================
+# Multi-tenant: преподаватели
+# ============================================================
+
+
+def add_teacher(conn: sqlite3.Connection, peer_id: int, teacher_uuid: str, teacher_name: str) -> None:
+    """Регистрирует беседу как преподавателя.
+
+    Взаимоисключение: если в этой беседе была группа — она удаляется.
+    """
+    with _write_lock:
+        # Удаляем группу, если была (беседа либо группа, либо препод)
+        conn.execute("DELETE FROM groups WHERE peer_id = ?", (peer_id,))
+        conn.execute(
+            "INSERT INTO teachers (peer_id, teacher_uuid, teacher_name, is_active, created_at) "
+            "VALUES (?, ?, ?, 1, ?) "
+            "ON CONFLICT(peer_id) DO UPDATE SET "
+            "  teacher_uuid = excluded.teacher_uuid, "
+            "  teacher_name = excluded.teacher_name",
+            (peer_id, teacher_uuid, teacher_name, _now()),
+        )
+        conn.commit()
+
+
+def get_teacher(conn: sqlite3.Connection, peer_id: int) -> Optional[dict]:
+    """Возвращает запись о преподавателе или None.
+
+    Формат:
+        {"peer_id": int, "teacher_uuid": str, "teacher_name": str,
+         "is_active": bool, "created_at": str}
+    """
+    row = conn.execute(
+        "SELECT peer_id, teacher_uuid, teacher_name, is_active, created_at " "FROM teachers WHERE peer_id = ?",
+        (peer_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "peer_id": row["peer_id"],
+        "teacher_uuid": row["teacher_uuid"],
+        "teacher_name": row["teacher_name"],
+        "is_active": bool(row["is_active"]),
+        "created_at": row["created_at"],
+    }
+
+
+def get_all_teachers(conn: sqlite3.Connection, only_active: bool = True) -> list[dict]:
+    """Список всех преподавателей."""
+    sql = "SELECT peer_id, teacher_uuid, teacher_name, is_active, created_at FROM teachers"
+    params: tuple = ()
+    if only_active:
+        sql += " WHERE is_active = 1"
+    sql += " ORDER BY created_at"
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "peer_id": r["peer_id"],
+            "teacher_uuid": r["teacher_uuid"],
+            "teacher_name": r["teacher_name"],
+            "is_active": bool(r["is_active"]),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def remove_teacher(conn: sqlite3.Connection, peer_id: int) -> None:
+    """Удаляет преподавателя из БД."""
+    with _write_lock:
+        conn.execute("DELETE FROM teachers WHERE peer_id = ?", (peer_id,))
+        conn.commit()
+
+
+def set_teacher_active(conn: sqlite3.Connection, peer_id: int, is_active: bool) -> None:
+    """Включает/выключает преподавателя."""
+    with _write_lock:
+        conn.execute("UPDATE teachers SET is_active = ? WHERE peer_id = ?", (1 if is_active else 0, peer_id))
+        conn.commit()
+
+
+def get_entity(conn: sqlite3.Connection, peer_id: int) -> Optional[dict]:
+    """Возвращает сущность, привязанную к беседе (группа или преподаватель).
+
+    В словарь добавляется ключ "type": "group" | "teacher".
+    Если ничего не найдено — None.
+    """
+    g = get_group(conn, peer_id)
+    if g is not None:
+        g["type"] = "group"
+        return g
+    t = get_teacher(conn, peer_id)
+    if t is not None:
+        t["type"] = "teacher"
+        return t
+    return None
 
 
 # ============================================================

@@ -29,6 +29,7 @@ from bell_detector import detect_bell_schedule
 from vk_upload import download_photo, pick_best_photo_size
 from handlers import (
     cmd_add_group,
+    cmd_add_teacher,
     cmd_bell,
     cmd_curator,
     cmd_group,
@@ -37,10 +38,13 @@ from handlers import (
     cmd_metrics,
     cmd_nextweek,
     cmd_remove_group,
+    cmd_remove_teacher,
     cmd_set_curator,
     cmd_start,
     cmd_status,
     cmd_subscribers,
+    cmd_teacher,
+    cmd_teachers,
     cmd_test,
     cmd_today,
     cmd_tomorrow,
@@ -212,6 +216,11 @@ async def on_status(message: Message):
     await cmd_status(message, conn)
 
 
+@bot.on.message(text=["/use", "/use <args>"])
+async def on_use(message: Message, args: str = ""):
+    await cmd_use(message, conn, args)
+
+
 @bot.on.message(text="/unsubscribe")
 async def on_unsubscribe(message: Message):
     await cmd_unsubscribe(message, conn)
@@ -225,6 +234,11 @@ async def on_whoami(message: Message):
 @bot.on.message(text="/interval <args>")
 async def on_interval(message: Message, args: str):
     await cmd_interval(message, conn, args)
+
+
+@bot.on.message(text=["/teacher", "/teacher <args>"])
+async def on_teacher(message: Message, args: str = ""):
+    await cmd_teacher(message, conn, args)
 
 
 @bot.on.message(text="/test")
@@ -252,6 +266,24 @@ async def on_week_skip_arg(message: Message, args: str):
     await cmd_week_skip(message, conn, args)
 
 
+# ---------- Multi-tenant: управление преподавателями ----------
+
+
+@bot.on.message(text=["/add_teacher", "/add_teacher <args>"])
+async def on_add_teacher(message: Message, args: str = ""):
+    await cmd_add_teacher(message, conn, args)
+
+
+@bot.on.message(text=["/remove_teacher", "/remove_teacher <args>"])
+async def on_remove_teacher(message: Message, args: str = ""):
+    await cmd_remove_teacher(message, conn, args)
+
+
+@bot.on.message(text="/teachers")
+async def on_teachers(message: Message):
+    await cmd_teachers(message, conn)
+
+
 # ---------- Multi-tenant: управление группами ----------
 
 
@@ -263,11 +295,6 @@ async def on_add_group(message: Message, args: str = ""):
 @bot.on.message(text=["/remove_group", "/remove_group <args>"])
 async def on_remove_group(message: Message, args: str = ""):
     await cmd_remove_group(message, conn, args)
-
-
-@bot.on.message(text=["/use", "/use <args>"])
-async def on_use(message: Message, args: str = ""):
-    await cmd_use(message, conn, args)
 
 
 @bot.on.message(text="/groups")
@@ -322,15 +349,19 @@ async def send_startup_greeting(conn, admin_peer_id: int | None = ADMIN_PEER_ID,
         return
 
     groups = db.get_all_groups(conn, only_active=False)
-    if groups:
-        logger.info("БД уже настроена (%d групп) — приветствие не отправляется", len(groups))
+    teachers = db.get_all_teachers(conn, only_active=False)
+    if groups or teachers:
+        logger.info(
+            "БД уже настроена (%d групп, %d преподавателей) — приветствие не отправляется", len(groups), len(teachers)
+        )
         return
 
     text = (
         "👋 Бот запустился.\n\n"
-        "Группа ещё не настроена. Если у вас есть права — "
-        "настройте командой:\n"
-        "  /group СП-N №группы\n\n"
+        "Беседа ещё не настроена. Если у вас есть права — "
+        "настройте её командой:\n"
+        "  /group СП-N №группы (для студентов)\n"
+        "  /teacher Фамилия Имя Отчество (для преподавателей)\n\n"
         "Где СП-N — подразделение, №группы — номер группы."
     )
 
@@ -362,15 +393,15 @@ async def background_checker():
             except Exception as e:
                 logger.exception("Ошибка bell_checks: %s", e)
 
-            # 3. Список активных групп
-            groups = db.get_all_groups(conn, only_active=True)
-            if not groups:
-                logger.info(">>> checker: активных групп нет")
+            # 3. Обновляем справочники (нужны и для групп, и для преподавателей)
+            _base_cache = scheduler.refresh_base_info_if_needed(conn, _base_cache)
+            if _base_cache is None:
+                logger.warning("Справочники недоступны — пропуск цикла")
             else:
-                # 3. Справочники общие для всех групп — обновляем один раз
-                _base_cache = scheduler.refresh_base_info_if_needed(conn, _base_cache)
-                if _base_cache is None:
-                    logger.warning("Справочники недоступны — пропуск цикла")
+                # --- Проверка групп ---
+                groups = db.get_all_groups(conn, only_active=True)
+                if not groups:
+                    logger.info(">>> checker: активных групп нет")
                 else:
                     for g in groups:
                         group_uuid = g["group_uuid"]
@@ -389,11 +420,46 @@ async def background_checker():
                                     logger.error("Ошибка отправки в peer=%s: %s", peer_id, e)
                         except Exception as e:
                             logger.exception("Ошибка цикла для группы %s: %s", group_name, e)
+
+                # --- Проверка преподавателей ---
+                teachers = db.get_all_teachers(conn, only_active=True)
+                if not teachers:
+                    logger.info(">>> checker: активных преподавателей нет")
+                else:
+                    for t in teachers:
+                        teacher_uuid = t["teacher_uuid"]
+                        peer_id = t["peer_id"]
+                        teacher_name = t["teacher_name"]
+                        try:
+                            messages = scheduler.run_teacher_check_cycle(conn, _base_cache, teacher_uuid)
+                            logger.info(
+                                ">>> checker: преподаватель %s (peer=%s), %d сообщений",
+                                teacher_name,
+                                peer_id,
+                                len(messages),
+                            )
+                            for msg in messages:
+                                try:
+                                    await send_schedule_message(
+                                        bot.api, peer_id, msg, conn=conn, group_uuid=teacher_uuid
+                                    )
+                                    await asyncio.sleep(2.0)
+                                except Exception as e:
+                                    logger.error("Ошибка отправки в peer=%s: %s", peer_id, e)
+                        except Exception as e:
+                            logger.exception("Ошибка цикла для преподавателя %s: %s", teacher_name, e)
         except Exception as e:
             logger.exception("Ошибка в фоновом цикле: %s", e)
 
         interval = db.get_setting(conn, "check_interval_minutes", CHECK_INTERVAL_MINUTES)
-        logger.info(">>> checker: спим %s мин", interval)
+        n_groups = len(db.get_all_groups(conn, only_active=True))
+        n_teachers = len(db.get_all_teachers(conn, only_active=True))
+        logger.info(
+            ">>> checker: цикл завершен (активных групп: %d, преподавателей: %d). Спим %s мин",
+            n_groups,
+            n_teachers,
+            interval,
+        )
         await asyncio.sleep(int(interval) * 60)
 
 
