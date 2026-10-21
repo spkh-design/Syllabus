@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from vkbottle import Keyboard, KeyboardButtonColor, Text
+from vkbottle import Keyboard, KeyboardButtonColor, Text, Callback
 
 # ============================================================
 # Inline-клавиатуры (для бесед и /help)
@@ -14,17 +14,17 @@ def get_public_inline_keyboard() -> str:
     kb = Keyboard(inline=True)
 
     # Ряд 1: 2 кнопки
-    kb.add(Text("Сегодня", payload={"cmd": "/today"}), color=KeyboardButtonColor.PRIMARY)
-    kb.add(Text("Завтра", payload={"cmd": "/tomorrow"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("Сегодня", payload={"cmd": "/today"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("Завтра", payload={"cmd": "/tomorrow"}), color=KeyboardButtonColor.PRIMARY)
 
     # Ряд 2: 2 кнопки
     kb.row()
-    kb.add(Text("Неделя", payload={"cmd": "/week"}), color=KeyboardButtonColor.PRIMARY)
-    kb.add(Text("След.", payload={"cmd": "/nextweek"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("Неделя", payload={"cmd": "/week"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("След.", payload={"cmd": "/nextweek"}), color=KeyboardButtonColor.PRIMARY)
 
     # Ряд 3: 1 кнопка (или 2, если влезет)
     kb.row()
-    kb.add(Text("Звонки", payload={"cmd": "/bell"}), color=KeyboardButtonColor.SECONDARY)
+    kb.add(Callback("Звонки", payload={"cmd": "/bell"}), color=KeyboardButtonColor.SECONDARY)
 
     return kb.get_json()
 
@@ -34,21 +34,21 @@ def get_admin_inline_keyboard() -> str:
     kb = Keyboard(inline=True)
 
     # Ряд 1: 3 кнопки (публичные)
-    kb.add(Text("Сегодня", payload={"cmd": "/today"}), color=KeyboardButtonColor.PRIMARY)
-    kb.add(Text("Завтра", payload={"cmd": "/tomorrow"}), color=KeyboardButtonColor.PRIMARY)
-    kb.add(Text("Неделя", payload={"cmd": "/week"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("Сегодня", payload={"cmd": "/today"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("Завтра", payload={"cmd": "/tomorrow"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("Неделя", payload={"cmd": "/week"}), color=KeyboardButtonColor.PRIMARY)
 
     # Ряд 2: 3 кнопки
     kb.row()
-    kb.add(Text("След.", payload={"cmd": "/nextweek"}), color=KeyboardButtonColor.PRIMARY)
-    kb.add(Text("Звонки", payload={"cmd": "/bell"}), color=KeyboardButtonColor.SECONDARY)
-    kb.add(Text("Где я", payload={"cmd": "/where"}), color=KeyboardButtonColor.SECONDARY)
+    kb.add(Callback("След.", payload={"cmd": "/nextweek"}), color=KeyboardButtonColor.PRIMARY)
+    kb.add(Callback("Звонки", payload={"cmd": "/bell"}), color=KeyboardButtonColor.SECONDARY)
+    kb.add(Callback("Где я", payload={"cmd": "/where"}), color=KeyboardButtonColor.SECONDARY)
 
     # Ряд 3: 3 кнопки (админские)
     kb.row()
-    kb.add(Text("Куратор", payload={"cmd": "/curator"}), color=KeyboardButtonColor.SECONDARY)
-    kb.add(Text("Статус", payload={"cmd": "/status"}), color=KeyboardButtonColor.SECONDARY)
-    kb.add(Text("Стоп", payload={"cmd": "/unsubscribe"}), color=KeyboardButtonColor.NEGATIVE)
+    kb.add(Callback("Куратор", payload={"cmd": "/curator"}), color=KeyboardButtonColor.SECONDARY)
+    kb.add(Callback("Статус", payload={"cmd": "/status"}), color=KeyboardButtonColor.SECONDARY)
+    kb.add(Callback("Стоп", payload={"cmd": "/unsubscribe"}), color=KeyboardButtonColor.NEGATIVE)
 
     return kb.get_json()
 
