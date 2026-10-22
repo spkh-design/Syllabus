@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 
 from vkbottle.bot import Bot, Message
 
@@ -34,6 +35,7 @@ from handlers import (
     cmd_curator,
     cmd_group,
     cmd_groups,
+    cmd_help,
     cmd_interval,
     cmd_metrics,
     cmd_nextweek,
@@ -67,6 +69,49 @@ _base_cache: dict | None = None
 
 
 bot = Bot(token=VK_TOKEN)
+
+
+def _parse_payload(payload_raw) -> dict:
+    """Безопасно парсит payload из строки в dict."""
+    if not payload_raw:
+        return {}
+    if isinstance(payload_raw, dict):
+        return payload_raw
+    try:
+        return json.loads(payload_raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+# Словарь: "команда" -> (функция, аргумент_или_None)
+_BUTTON_HANDLERS = {
+    # Публичные команды
+    "/today": (cmd_today, None),
+    "/tomorrow": (cmd_tomorrow, None),
+    "/week": (cmd_week, None),
+    "/nextweek": (cmd_nextweek, None),
+    "/where": (cmd_where, None),
+    "/bell": (cmd_bell, ""),
+    # Админские команды (без аргументов)
+    "/curator": (cmd_curator, None),
+    "/status": (cmd_status, None),
+    "/unsubscribe": (cmd_unsubscribe, None),
+    "/groups": (cmd_groups, None),
+    "/teachers": (cmd_teachers, None),
+    "/metrics": (cmd_metrics, None),
+    "/subscribers": (cmd_subscribers, None),
+    # Админские команды (требуют аргументов — передаем "", чтобы вывести подсказку)
+    "/add_group": (cmd_add_group, ""),
+    "/add_teacher": (cmd_add_teacher, ""),
+    "/remove_group": (cmd_remove_group, ""),
+    "/remove_teacher": (cmd_remove_teacher, ""),
+    "/interval": (cmd_interval, ""),
+    "/week_skip": (cmd_week_skip, ""),
+    "/use": (cmd_use, ""),
+    "/set_curator": (cmd_set_curator, ""),
+    "/group": (cmd_group, ""),
+    "/teacher": (cmd_teacher, ""),
+}
 
 
 # ---------- Сохраняем все входящие сообщения ----------
@@ -124,13 +169,11 @@ async def save_incoming_raw(event: dict) -> None:
         if photo_url:
             image_bytes = await download_photo(photo_url)
             if image_bytes and ocr_is_available():
-                # Tesseract — синхронный, уводим в поток, чтобы не блокировать loop
                 ocr_text = await asyncio.to_thread(ocr_extract_text, image_bytes)
                 if ocr_text:
                     logger.info(
                         "OCR done: peer=%s msg=%s chars=%d preview=%r", peer_id, msg_id, len(ocr_text), ocr_text[:80]
                     )
-                # Помечаем, что OCR для этого сообщения прогоняли
                 db.mark_chat_message_ocr_done(conn, peer_id, msg_id)
 
         # --- Детект bell schedule (text + ocr) ---
@@ -141,7 +184,7 @@ async def save_incoming_raw(event: dict) -> None:
         today = _date.today()
         if result.target_date < today:
             logger.warning(
-                "Bell schedule определён на %s — это прошлое (сегодня %s), " "пропускаем. text=%r ocr_preview=%r",
+                "Bell schedule определён на %s — это прошлое (сегодня %s), пропускаем. text=%r ocr_preview=%r",
                 result.target_date,
                 today,
                 text[:60],
@@ -149,8 +192,6 @@ async def save_incoming_raw(event: dict) -> None:
             )
             return
 
-        # Картинку сохраняем только для найденных bell schedules,
-        # чтобы не раздувать БД байтами всех фото подряд.
         db.save_bell_schedule(
             conn,
             peer_id=peer_id,
@@ -176,9 +217,14 @@ async def save_incoming_raw(event: dict) -> None:
 # ---------- Обработчики команд ----------
 
 
-@bot.on.message(text=["/start", "/help", "начать", "start"])
+@bot.on.message(text=["/start", "начать", "start"])
 async def on_start(message: Message):
     await cmd_start(message, conn)
+
+
+@bot.on.message(text="/help")
+async def on_help(message: Message):
+    await cmd_help(message, conn)
 
 
 @bot.on.message(text="/group <args>")
@@ -318,6 +364,107 @@ async def on_curator(message: Message):
 @bot.on.message(text=["/bell", "/bell <args>"])
 async def on_bell(message: Message, args: str = ""):
     await cmd_bell(message, conn, args)
+
+
+@bot.on.raw_event("message_event")
+async def on_message_event(event: dict) -> None:
+    """Обрабатывает нажатия на Callback-кнопки (Inline)."""
+    obj = event.get("object", {})
+    if not obj:
+        return
+
+    payload = _parse_payload(obj.get("payload"))
+    cmd = payload.get("cmd")
+
+    if not cmd:
+        return
+
+    # Обязательно: отвечаем VK, чтобы с кнопки исчезла "крутилка" загрузки
+    try:
+        await bot.api.messages.send_message_event_answer(
+            event_id=obj.get("event_id"), user_id=obj.get("user_id"), peer_id=obj.get("peer_id")
+        )
+    except Exception as e:
+        logger.warning("Не удалось ответить на message_event: %s", e)
+
+    class FakeMessage:
+        def __init__(self, peer_id, from_id, text, ctx_api):
+            self.peer_id = peer_id
+            self.from_id = from_id
+            self.text = text
+            self.ctx_api = ctx_api
+            self.payload = payload
+
+        async def answer(self, text, **kwargs):
+            await self.ctx_api.messages.send(peer_id=self.peer_id, message=text, random_id=0, **kwargs)
+
+    msg = FakeMessage(peer_id=obj.get("peer_id"), from_id=obj.get("user_id"), text=cmd, ctx_api=bot.api)
+
+    entry = _BUTTON_HANDLERS.get(cmd)
+    if not entry:
+        logger.warning("Неизвестный payload от кнопки: %s", cmd)
+        return
+
+    func, arg = entry
+    try:
+        if arg is None:
+            await func(msg, conn)
+        else:
+            await func(msg, conn, arg)
+    except Exception as e:
+        logger.exception("Ошибка при обработке кнопки %s: %s", cmd, e)
+
+
+@bot.on.message(
+    text=[
+        "Сегодня",
+        "Завтра",
+        "Неделя",
+        "След. неделя",
+        "Звонки",
+        "Где я",
+        "Группы",
+        "Преподаватели",
+        "Статус",
+        "Добавить группу",
+        "Добавить препода",
+        "Интервал",
+        "Пропустить неделю",
+    ]
+)
+async def on_reply_button(message: Message):
+    """Обрабатывает нажатия на Reply-кнопки (по их тексту)."""
+    text = (message.text or "").strip()
+
+    # Словарь: текст кнопки -> (функция, передавать_ли_пустой_аргумент)
+    mapping = {
+        "Сегодня": (cmd_today, False),
+        "Завтра": (cmd_tomorrow, False),
+        "Неделя": (cmd_week, False),
+        "След. неделя": (cmd_nextweek, False),
+        "Звонки": (cmd_bell, True),
+        "Где я": (cmd_where, False),
+        "Группы": (cmd_groups, False),
+        "Преподаватели": (cmd_teachers, False),
+        "Статус": (cmd_status, False),
+        "Добавить группу": (cmd_add_group, True),
+        "Добавить препода": (cmd_add_teacher, True),
+        "Интервал": (cmd_interval, True),
+        "Пропустить неделю": (cmd_week_skip, True),
+    }
+
+    entry = mapping.get(text)
+    if not entry:
+        return
+
+    func, needs_arg = entry
+    try:
+        if needs_arg:
+            await func(message, conn, "")
+        else:
+            await func(message, conn)
+    except Exception as e:
+        logger.exception("Ошибка при обработке Reply-кнопки %s: %s", text, e)
 
 
 @bot.on.message()
