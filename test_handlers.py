@@ -28,9 +28,11 @@ class FakeMessage:
         self.ctx_api.users.get = AsyncMock(return_value=[])
         self.ctx_api.messages.send = AsyncMock()
 
-    async def answer(self, text, attachment=None):
+    # Добавляем **kwargs, чтобы принимать keyboard и другие параметры
+    async def answer(self, text, attachment=None, **kwargs):
         self.answers.append(text)
         self.attachments.append(attachment)
+        self.last_kwargs = kwargs
 
 
 @pytest.fixture
@@ -92,10 +94,8 @@ async def test_start(conn):
     assert len(m.answers) == 1
     text = m.answers[0]
     assert "Привет" in text
-    assert "/week" in text
-    assert "/nextweek" in text
-    assert "/add_group" in text
-    assert "/set_curator" in text
+    assert "/help" in text
+    assert "keyboard" in m.last_kwargs
 
 
 # ============================================================
