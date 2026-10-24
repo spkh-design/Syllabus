@@ -25,9 +25,10 @@ from datetime import date as _date
 import database as db
 import scheduler
 from schedule_sender import send_schedule_message
-from config import VK_TOKEN, CHECK_INTERVAL_MINUTES, DB_PATH, ADMIN_PEER_ID
+from config import VK_TOKEN, CHECK_INTERVAL_MINUTES, DB_PATH, ADMIN_PEER_ID, COMMAND_COOLDOWN_SECONDS
 from bell_detector import detect_bell_schedule
 from vk_upload import download_photo, pick_best_photo_size
+from command_guard import guarded, check_cooldown
 from handlers import (
     cmd_add_group,
     cmd_add_teacher,
@@ -223,41 +224,49 @@ async def on_start(message: Message):
 
 
 @bot.on.message(text="/help")
+@guarded("help", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_help(message: Message):
     await cmd_help(message, conn)
 
 
 @bot.on.message(text="/group <args>")
+@guarded("group", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_group(message: Message, args: str):
     await cmd_group(message, conn, args)
 
 
 @bot.on.message(text="/where")
+@guarded("where", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_where(message: Message):
     await cmd_where(message, conn)
 
 
 @bot.on.message(text="/today")
+@guarded("today", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_today(message: Message):
     await cmd_today(message, conn)
 
 
 @bot.on.message(text="/tomorrow")
+@guarded("tomorrow", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_tomorrow(message: Message):
     await cmd_tomorrow(message, conn)
 
 
 @bot.on.message(text="/week")
+@guarded("week", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_week(message: Message):
     await cmd_week(message, conn)
 
 
 @bot.on.message(text="/nextweek")
+@guarded("nextweek", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_nextweek(message: Message):
     await cmd_nextweek(message, conn)
 
 
 @bot.on.message(text="/status")
+@guarded("status", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_status(message: Message):
     await cmd_status(message, conn)
 
@@ -282,7 +291,8 @@ async def on_interval(message: Message, args: str):
     await cmd_interval(message, conn, args)
 
 
-@bot.on.message(text=["/teacher", "/teacher <args>"])
+@bot.on.message(text=["/teacher <args>"])
+@guarded("teacher", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_teacher(message: Message, args: str = ""):
     await cmd_teacher(message, conn, args)
 
@@ -405,6 +415,10 @@ async def on_message_event(event: dict) -> None:
         logger.warning("Неизвестный payload от кнопки: %s", cmd)
         return
 
+    # Проверка кулдауна для кнопок
+    if not check_cooldown(msg.from_id, msg.peer_id, cmd, COMMAND_COOLDOWN_SECONDS):
+        return
+
     func, arg = entry
     try:
         if arg is None:
@@ -455,6 +469,10 @@ async def on_reply_button(message: Message):
 
     entry = mapping.get(text)
     if not entry:
+        return
+
+    # Проверка кулдауна для Reply-кнопок
+    if not check_cooldown(message.from_id, message.peer_id, text, COMMAND_COOLDOWN_SECONDS):
         return
 
     func, needs_arg = entry
