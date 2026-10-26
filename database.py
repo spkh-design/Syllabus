@@ -90,6 +90,38 @@ CREATE TABLE IF NOT EXISTS week_images (
     PRIMARY KEY (group_uuid, week_start)
 );
 
+CREATE TABLE IF NOT EXISTS contacts (
+    peer_id      INTEGER NOT NULL,
+    teacher_uuid TEXT NOT NULL,
+    teacher_name TEXT NOT NULL,
+    emails       TEXT NOT NULL DEFAULT '[]',
+    telegram     TEXT NOT NULL DEFAULT '',
+    tg_groups    TEXT NOT NULL DEFAULT '[]',
+    vk           TEXT NOT NULL DEFAULT '',
+    vk_groups    TEXT NOT NULL DEFAULT '[]',
+    phones       TEXT NOT NULL DEFAULT '[]',
+    folders      TEXT NOT NULL DEFAULT '[]',
+    max_link     TEXT NOT NULL DEFAULT '',
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (peer_id, teacher_uuid)
+);
+
+CREATE TABLE IF NOT EXISTS student_contacts (
+    peer_id      INTEGER NOT NULL,
+    student_name TEXT NOT NULL,
+    emails       TEXT NOT NULL DEFAULT '[]',
+    telegram     TEXT NOT NULL DEFAULT '',
+    tg_groups    TEXT NOT NULL DEFAULT '[]',
+    vk           TEXT NOT NULL DEFAULT '',
+    vk_groups    TEXT NOT NULL DEFAULT '[]',
+    phones       TEXT NOT NULL DEFAULT '[]',
+    folders      TEXT NOT NULL DEFAULT '[]',
+    max_link     TEXT NOT NULL DEFAULT '',
+    address      TEXT NOT NULL DEFAULT '',
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (peer_id, student_name)
+);
+
 -- ============================================================
 -- Multi-tenant: группы, обслуживаемые ботом (одна беседа = одна группа)
 -- ============================================================
@@ -1099,3 +1131,299 @@ def migrate_settings_to_groups(conn: sqlite3.Connection) -> bool:
 
     logger.info("Миграция settings→groups: peer_id=%s, group=%s", peer_id, group_name)
     return True
+
+
+# ============================================================
+# Контакты преподавателей
+# ============================================================
+
+
+def _json_list(val: str) -> list[str]:
+    if not val:
+        return []
+    try:
+        return json.loads(val)
+    except (ValueError, TypeError):
+        return []
+
+
+def save_contact(
+    conn: sqlite3.Connection,
+    peer_id: int,
+    teacher_uuid: str,
+    teacher_name: str,
+    *,
+    emails: list[str] | None = None,
+    telegram: str = "",
+    tg_groups: list[str] | None = None,
+    vk: str = "",
+    vk_groups: list[str] | None = None,
+    phones: list[str] | None = None,
+    folders: list[str] | None = None,
+    max_link: str = "",
+) -> None:
+    """Полностью сохраняет (или перезаписывает) контакты препода."""
+    now = _now()
+    with _write_lock:
+        conn.execute(
+            "INSERT INTO contacts "
+            "(peer_id, teacher_uuid, teacher_name, emails, telegram, tg_groups, "
+            " vk, vk_groups, phones, folders, max_link, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(peer_id, teacher_uuid) DO UPDATE SET "
+            "  teacher_name = excluded.teacher_name, "
+            "  emails       = excluded.emails, "
+            "  telegram     = excluded.telegram, "
+            "  tg_groups    = excluded.tg_groups, "
+            "  vk           = excluded.vk, "
+            "  vk_groups    = excluded.vk_groups, "
+            "  phones       = excluded.phones, "
+            "  folders      = excluded.folders, "
+            "  max_link     = excluded.max_link, "
+            "  updated_at   = excluded.updated_at",
+            (
+                peer_id,
+                teacher_uuid,
+                teacher_name,
+                json.dumps(emails or [], ensure_ascii=False),
+                telegram,
+                json.dumps(tg_groups or [], ensure_ascii=False),
+                vk,
+                json.dumps(vk_groups or [], ensure_ascii=False),
+                json.dumps(phones or [], ensure_ascii=False),
+                json.dumps(folders or [], ensure_ascii=False),
+                max_link,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def update_contact_field(
+    conn: sqlite3.Connection, peer_id: int, teacher_uuid: str, field: str, value: str | list[str]
+) -> bool:
+    """Обновляет конкретное поле контакта. Возвращает True, если запись была."""
+    valid_fields = {"emails", "telegram", "tg_groups", "vk", "vk_groups", "phones", "folders", "max_link"}
+    if field not in valid_fields:
+        raise ValueError(f"Неизвестное поле контакта: {field}")
+
+    # Для списков сериализуем в JSON, для строк оставляем как есть
+    if field in {"emails", "tg_groups", "vk_groups", "phones", "folders"}:
+        db_value = json.dumps(value if isinstance(value, list) else [value], ensure_ascii=False)
+    else:
+        db_value = str(value)
+
+    now = _now()
+    with _write_lock:
+        cur = conn.execute(
+            f"UPDATE contacts SET {field} = ?, updated_at = ? " "WHERE peer_id = ? AND teacher_uuid = ?",
+            (db_value, now, peer_id, teacher_uuid),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def get_contact(conn: sqlite3.Connection, peer_id: int, teacher_uuid: str) -> Optional[dict]:
+    """Возвращает контакт преподавателя для конкретной беседы."""
+    row = conn.execute(
+        "SELECT * FROM contacts WHERE peer_id = ? AND teacher_uuid = ?", (peer_id, teacher_uuid)
+    ).fetchone()
+    if row is None:
+        return None
+
+    return {
+        "peer_id": row["peer_id"],
+        "teacher_uuid": row["teacher_uuid"],
+        "teacher_name": row["teacher_name"],
+        "emails": _json_list(row["emails"]),
+        "telegram": row["telegram"],
+        "tg_groups": _json_list(row["tg_groups"]),
+        "vk": row["vk"],
+        "vk_groups": _json_list(row["vk_groups"]),
+        "phones": _json_list(row["phones"]),
+        "folders": _json_list(row["folders"]),
+        "max_link": row["max_link"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def get_contacts_by_name(conn: sqlite3.Connection, peer_id: int, name_query: str) -> list[dict]:
+    """Ищет контакты по подстроке в ФИО (только для указанной беседы)."""
+    rows = conn.execute(
+        "SELECT * FROM contacts WHERE peer_id = ? AND teacher_name LIKE ? ORDER BY teacher_name",
+        (peer_id, f"%{name_query}%"),
+    ).fetchall()
+
+    result = []
+    for row in rows:
+        result.append(
+            {
+                "peer_id": row["peer_id"],
+                "teacher_uuid": row["teacher_uuid"],
+                "teacher_name": row["teacher_name"],
+                "emails": _json_list(row["emails"]),
+                "telegram": row["telegram"],
+                "tg_groups": _json_list(row["tg_groups"]),
+                "vk": row["vk"],
+                "vk_groups": _json_list(row["vk_groups"]),
+                "phones": _json_list(row["phones"]),
+                "folders": _json_list(row["folders"]),
+                "max_link": row["max_link"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return result
+
+
+def get_all_contacts(conn: sqlite3.Connection, peer_id: int) -> list[dict]:
+    """Возвращает все контакты для беседы."""
+    rows = conn.execute("SELECT * FROM contacts WHERE peer_id = ? ORDER BY teacher_name", (peer_id,)).fetchall()
+
+    result = []
+    for row in rows:
+        result.append(
+            {
+                "peer_id": row["peer_id"],
+                "teacher_uuid": row["teacher_uuid"],
+                "teacher_name": row["teacher_name"],
+                "emails": _json_list(row["emails"]),
+                "telegram": row["telegram"],
+                "tg_groups": _json_list(row["tg_groups"]),
+                "vk": row["vk"],
+                "vk_groups": _json_list(row["vk_groups"]),
+                "phones": _json_list(row["phones"]),
+                "folders": _json_list(row["folders"]),
+                "max_link": row["max_link"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return result
+
+
+def remove_contact(conn: sqlite3.Connection, peer_id: int, teacher_uuid: str) -> bool:
+    """Удаляет контакт преподавателя. Возвращает True, если запись была."""
+    with _write_lock:
+        cur = conn.execute("DELETE FROM contacts WHERE peer_id = ? AND teacher_uuid = ?", (peer_id, teacher_uuid))
+        conn.commit()
+    return cur.rowcount > 0
+
+
+# ============================================================
+# Контакты студентов
+# ============================================================
+
+
+def save_student_contact(
+    conn: sqlite3.Connection,
+    peer_id: int,
+    student_name: str,
+    *,
+    emails: list[str] | None = None,
+    telegram: str = "",
+    tg_groups: list[str] | None = None,
+    vk: str = "",
+    vk_groups: list[str] | None = None,
+    phones: list[str] | None = None,
+    folders: list[str] | None = None,
+    max_link: str = "",
+    address: str = "",
+) -> None:
+    now = _now()
+    with _write_lock:
+        conn.execute(
+            "INSERT INTO student_contacts "
+            "(peer_id, student_name, emails, telegram, tg_groups, vk, vk_groups, phones, folders, max_link, address, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(peer_id, student_name) DO UPDATE SET "
+            "  emails = excluded.emails, telegram = excluded.telegram, tg_groups = excluded.tg_groups, "
+            "  vk = excluded.vk, vk_groups = excluded.vk_groups, phones = excluded.phones, "
+            "  folders = excluded.folders, max_link = excluded.max_link, address = excluded.address, "
+            "  updated_at = excluded.updated_at",
+            (
+                peer_id,
+                student_name,
+                json.dumps(emails or [], ensure_ascii=False),
+                telegram,
+                json.dumps(tg_groups or [], ensure_ascii=False),
+                vk,
+                json.dumps(vk_groups or [], ensure_ascii=False),
+                json.dumps(phones or [], ensure_ascii=False),
+                json.dumps(folders or [], ensure_ascii=False),
+                max_link,
+                address,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def get_student_contact(conn: sqlite3.Connection, peer_id: int, student_name: str) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT * FROM student_contacts WHERE peer_id = ? AND student_name = ?", (peer_id, student_name)
+    ).fetchone()
+    if row is None:
+        return None
+    return _row_to_dict(row)
+
+
+def get_students_by_name(conn: sqlite3.Connection, peer_id: int, name_query: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM student_contacts WHERE peer_id = ? AND student_name LIKE ? ORDER BY student_name",
+        (peer_id, f"%{name_query}%"),
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def get_all_students(conn: sqlite3.Connection, peer_id: int) -> list[dict]:
+    rows = conn.execute("SELECT * FROM student_contacts WHERE peer_id = ? ORDER BY student_name", (peer_id,)).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def remove_student_contact(conn: sqlite3.Connection, peer_id: int, student_name: str) -> bool:
+    with _write_lock:
+        cur = conn.execute(
+            "DELETE FROM student_contacts WHERE peer_id = ? AND student_name = ?", (peer_id, student_name)
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def update_student_contact_field(
+    conn: sqlite3.Connection, peer_id: int, student_name: str, field: str, value: str | list[str]
+) -> bool:
+    """Обновляет конкретное поле контакта студента. Возвращает True, если запись была."""
+    valid_fields = {"emails", "telegram", "tg_groups", "vk", "vk_groups", "phones", "folders", "max_link", "address"}
+    if field not in valid_fields:
+        raise ValueError(f"Неизвестное поле контакта: {field}")
+
+    if field in {"emails", "tg_groups", "vk_groups", "phones", "folders"}:
+        db_value = json.dumps(value if isinstance(value, list) else [value], ensure_ascii=False)
+    else:
+        db_value = str(value)
+
+    now = _now()
+    with _write_lock:
+        cur = conn.execute(
+            f"UPDATE student_contacts SET {field} = ?, updated_at = ? " "WHERE peer_id = ? AND student_name = ?",
+            (db_value, now, peer_id, student_name),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def _row_to_dict(row) -> dict:
+    """Хелпер для преобразования строки БД в словарь."""
+    return {
+        "peer_id": row["peer_id"],
+        "student_name": row["student_name"],
+        "emails": _json_list(row["emails"]),
+        "telegram": row["telegram"],
+        "tg_groups": _json_list(row["tg_groups"]),
+        "vk": row["vk"],
+        "vk_groups": _json_list(row["vk_groups"]),
+        "phones": _json_list(row["phones"]),
+        "folders": _json_list(row["folders"]),
+        "max_link": row["max_link"],
+        "address": row["address"],
+        "updated_at": row["updated_at"],
+    }
