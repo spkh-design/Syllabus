@@ -30,9 +30,13 @@ from bell_detector import detect_bell_schedule
 from vk_upload import download_photo, pick_best_photo_size
 from command_guard import guarded, check_cooldown
 from handlers import (
+    cmd_add_contact,
     cmd_add_group,
+    cmd_add_student_contact,
     cmd_add_teacher,
     cmd_bell,
+    cmd_contact,
+    cmd_contacts,
     cmd_curator,
     cmd_group,
     cmd_groups,
@@ -40,11 +44,15 @@ from handlers import (
     cmd_interval,
     cmd_metrics,
     cmd_nextweek,
+    cmd_remove_contact,
     cmd_remove_group,
+    cmd_remove_student_contact,
     cmd_remove_teacher,
     cmd_set_curator,
     cmd_start,
     cmd_status,
+    cmd_student_contact,
+    cmd_students_contacts,
     cmd_subscribers,
     cmd_teacher,
     cmd_teachers,
@@ -52,6 +60,8 @@ from handlers import (
     cmd_today,
     cmd_tomorrow,
     cmd_unsubscribe,
+    cmd_update_contact,
+    cmd_update_student_contact,
     cmd_use,
     cmd_week,
     cmd_week_skip,
@@ -93,6 +103,8 @@ _BUTTON_HANDLERS = {
     "/nextweek": (cmd_nextweek, None),
     "/where": (cmd_where, None),
     "/bell": (cmd_bell, ""),
+    "/contacts": (cmd_contacts, None),
+    "/students_contacts": (cmd_students_contacts, None),
     # Админские команды (без аргументов)
     "/curator": (cmd_curator, None),
     "/status": (cmd_status, None),
@@ -102,12 +114,16 @@ _BUTTON_HANDLERS = {
     "/metrics": (cmd_metrics, None),
     "/subscribers": (cmd_subscribers, None),
     # Админские команды (требуют аргументов — передаем "", чтобы вывести подсказку)
+    "/add_contact": (cmd_add_contact, ""),
+    "/add_student_contact": (cmd_add_student_contact, ""),
     "/add_group": (cmd_add_group, ""),
     "/add_teacher": (cmd_add_teacher, ""),
     "/remove_group": (cmd_remove_group, ""),
     "/remove_teacher": (cmd_remove_teacher, ""),
     "/interval": (cmd_interval, ""),
     "/week_skip": (cmd_week_skip, ""),
+    "/update_contact": (cmd_update_contact, ""),
+    "/update_student_contact": (cmd_update_student_contact, ""),
     "/use": (cmd_use, ""),
     "/set_curator": (cmd_set_curator, ""),
     "/group": (cmd_group, ""),
@@ -322,6 +338,72 @@ async def on_week_skip_arg(message: Message, args: str):
     await cmd_week_skip(message, conn, args)
 
 
+# ---------- Контакты преподавателей ----------
+
+
+@bot.on.message(text=["/add_contact", "/add_contact <args>"])
+@guarded("add_contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_add_contact(message: Message, args: str = ""):
+    await cmd_add_contact(message, conn, args)
+
+
+@bot.on.message(text=["/update_contact", "/update_contact <args>"])
+@guarded("update_contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_update_contact(message: Message, args: str = ""):
+    await cmd_update_contact(message, conn, args)
+
+
+@bot.on.message(text=["/remove_contact", "/remove_contact <args>"])
+@guarded("remove_contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_remove_contact(message: Message, args: str = ""):
+    await cmd_remove_contact(message, conn, args)
+
+
+@bot.on.message(text=["/contact", "/contact <args>"])
+@guarded("contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_contact(message: Message, args: str = ""):
+    await cmd_contact(message, conn, args)
+
+
+@bot.on.message(text="/contacts")
+@guarded("contacts", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_contacts(message: Message):
+    await cmd_contacts(message, conn)
+
+
+# ---------- Контакты студентов ----------
+
+
+@bot.on.message(text=["/add_student_contact", "/add_student_contact <args>"])
+@guarded("add_student_contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_add_student_contact(message: Message, args: str = ""):
+    await cmd_add_student_contact(message, conn, args)
+
+
+@bot.on.message(text=["/remove_student_contact", "/remove_student_contact <args>"])
+@guarded("remove_student_contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_remove_student_contact(message: Message, args: str = ""):
+    await cmd_remove_student_contact(message, conn, args)
+
+
+@bot.on.message(text=["/update_student_contact", "/update_student_contact <args>"])
+@guarded("update_student_contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_update_student_contact(message: Message, args: str = ""):
+    await cmd_update_student_contact(message, conn, args)
+
+
+@bot.on.message(text=["/student_contact", "/student_contact <args>"])
+@guarded("student_contact", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_student_contact(message: Message, args: str = ""):
+    await cmd_student_contact(message, conn, args)
+
+
+@bot.on.message(text="/students_contacts")
+@guarded("students_contacts", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_students_contacts(message: Message):
+    await cmd_students_contacts(message, conn)
+
+
 # ---------- Multi-tenant: управление преподавателями ----------
 
 
@@ -437,11 +519,14 @@ async def on_message_event(event: dict) -> None:
         "След. неделя",
         "Звонки",
         "Где я",
+        "Контакты",
+        "Студенты",
         "Группы",
         "Преподаватели",
         "Статус",
         "Добавить группу",
         "Добавить препода",
+        "Добавить студента",
         "Интервал",
         "Пропустить неделю",
     ]
@@ -458,11 +543,14 @@ async def on_reply_button(message: Message):
         "След. неделя": (cmd_nextweek, False),
         "Звонки": (cmd_bell, True),
         "Где я": (cmd_where, False),
+        "Контакты": (cmd_contacts, False),
+        "Студенты": (cmd_students_contacts, False),
         "Группы": (cmd_groups, False),
         "Преподаватели": (cmd_teachers, False),
         "Статус": (cmd_status, False),
         "Добавить группу": (cmd_add_group, True),
         "Добавить препода": (cmd_add_teacher, True),
+        "Добавить студента": (cmd_add_student_contact, True),
         "Интервал": (cmd_interval, True),
         "Пропустить неделю": (cmd_week_skip, True),
     }
