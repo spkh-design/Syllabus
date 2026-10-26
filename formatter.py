@@ -257,3 +257,66 @@ def split_message(text: str, limit: int = VK_MESSAGE_LIMIT) -> list[str]:
         parts.append("\n".join(current))
 
     return parts
+
+
+def format_contact_info(contact: dict) -> str:
+    """Форматирует контакт (препода или студента) в читаемый вид."""
+    name = contact.get("teacher_name") or contact.get("student_name") or "Неизвестно"
+    lines = [f"👤 {name}"]
+
+    def format_list(items: list[str]) -> str:
+        if len(items) == 1:
+            return items[0]
+        return "\n" + "\n".join(f"  • {item}" for item in items)
+
+    if contact.get("emails"):
+        lines.append(f"✉️ Почта: {format_list(contact['emails'])}")
+    if contact.get("phones"):
+        lines.append(f"📱 Телефон: {format_list(contact['phones'])}")
+    if contact.get("telegram"):
+        lines.append(f"💬 Телеграмм: {contact['telegram']}")
+    if contact.get("tg_groups"):
+        lines.append(f"👥 Группа TG: {format_list(contact['tg_groups'])}")
+    if contact.get("vk"):
+        lines.append(f"🌐 ВК: {contact['vk']}")
+    if contact.get("vk_groups"):
+        lines.append(f"👥 Группа ВК: {format_list(contact['vk_groups'])}")
+    if contact.get("folders"):
+        folders_text = "\n".join(f"  • {folder}" for folder in contact["folders"])
+        lines.append(f"📁 Папки:\n{folders_text}")
+    if contact.get("max_link"):
+        lines.append(f"🔗 MAX: {contact['max_link']}")
+    if contact.get("address"):
+        lines.append(f"🏠 Адрес: {contact['address']}")
+
+    return "\n".join(lines)
+
+
+def batch_formatted_blocks(blocks: list[str], limit: int = VK_MESSAGE_LIMIT) -> list[str]:
+    """Объединяет блоки в сообщения, не разрывая сами блоки.
+
+    Если один блок больше лимита, он всё равно отправляется целиком
+    (VK может его отклонить, но это лучше, чем разорвать контакт).
+    """
+    if not blocks:
+        return []
+
+    parts = []
+    current_part = []
+    current_len = 0
+
+    for block in blocks:
+        block_len = len(block)
+        # +2 за два переноса строки между блоками
+        if current_part and (current_len + block_len + 2 > limit):
+            parts.append("\n\n".join(current_part))
+            current_part = [block]
+            current_len = block_len
+        else:
+            current_part.append(block)
+            current_len += block_len + 2
+
+    if current_part:
+        parts.append("\n\n".join(current_part))
+
+    return parts

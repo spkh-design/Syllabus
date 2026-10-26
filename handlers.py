@@ -38,8 +38,15 @@ from scheduler import ScheduleMessage
 import re
 import database as db
 import schedule_api
+import contact_parser
 from config import is_admin_id
-from formatter import format_day_schedule, format_week_schedule, split_message
+from formatter import (
+    format_day_schedule,
+    format_week_schedule,
+    split_message,
+    format_contact_info,
+    batch_formatted_blocks,
+)
 from bell_detector import extract_date
 from bell_sender import prepare_image
 from vk_upload import upload_png_to_vk
@@ -167,13 +174,18 @@ async def cmd_help(message: Message, conn) -> None:
             "Команды с аргументами (напиши текстом):\n"
             "  /group СП-X yyy — задать группу\n"
             "  /teacher ФИО — задать препода\n"
+            "  /add_contact ФИО ... — добавить контакты препода\n"
+            "  /add_student_contact ФИО ... — добавить контакты студента\n"
             "  /add_group СП-X yyy — добавить беседу группы\n"
             "  /add_teacher ФИО — добавить беседу препода\n"
+            "  /remove_contact ФИО — удалить контакты препода\n"
+            "  /remove_student_contact ФИО — удалить контакты студента\n"
             "  /remove_group — удалить группу\n"
             "  /remove_teacher — удалить препода\n"
             "  /set_curator ID — назначить куратора\n"
             "  /interval N — интервал проверки\n"
             "  /week_skip — пропустить неделю\n"
+            "  /update_contact ФИО ... — обновить контакты препода\n"
             "  /use N — выбрать беседу (в ЛС)\n"
             "  /metrics — метрики"
         )
@@ -189,6 +201,10 @@ async def cmd_help(message: Message, conn) -> None:
             "  /nextweek — на следующую неделю\n"
             "  /bell — расписание звонков\n"
             "  /where — какая беседа отслеживается"
+            "  /contact Фамилия — контакты преподавателя\n"
+            "  /contacts — все контакты преподавателей\n"
+            "  /student_contact Фамилия — контакты студента\n"
+            "  /students_contacts — все контакты студентов\n"
         )
         kb = get_public_inline_keyboard()
 
@@ -1108,3 +1124,315 @@ async def cmd_bell(message: Message, conn, args: str) -> None:
     await message.ctx_api.messages.send(
         peer_id=peer_id, message=f"Расписание звонков на {date_label}.\n{caption}", random_id=0
     )
+
+
+# ============================================================
+# Контакты преподавателей
+# ============================================================
+
+
+async def cmd_add_contact(message: Message, conn, args: str) -> None:
+    """Добавляет или полностью перезаписывает контакты препода.
+
+    Синтаксис: /add_contact ФИО Почта: a@b.c; Телефон: +7999...
+    """
+    if not await _require_admin(message):
+        return
+
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    fio, parsed = contact_parser.parse_contact_string(args)
+    if not fio or not parsed:
+        await message.answer(
+            "❌ Формат: /add_contact Иванов Иван Почта: mail@mail.ru Телефон: +7999...\n"
+            "Доступные поля: Почта, Телеграмм, Группа телеграмм, ВК, ВК группа, Телефон, Папки, Ссылка MAX"
+        )
+        return
+
+    # Проверяем, есть ли такой преподаватель в базе колледжа
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники. Попробуйте позже.")
+        return
+
+    found = schedule_api.find_teacher(base, fio)
+    if found is None:
+        await message.answer(f"❌ Преподаватель «{fio}» не найден в базе колледжа.")
+        return
+
+    db.save_contact(
+        conn,
+        peer_id=peer_id,
+        teacher_uuid=found["id"],
+        teacher_name=found["name"],
+        emails=parsed.get("emails", []),
+        telegram=parsed.get("telegram", ""),
+        tg_groups=parsed.get("tg_groups", []),
+        vk=parsed.get("vk", ""),
+        vk_groups=parsed.get("vk_groups", []),
+        phones=parsed.get("phones", []),
+        folders=parsed.get("folders", []),
+        max_link=parsed.get("max_link", ""),
+    )
+
+    await message.answer(f"✅ Контакты для «{found['name']}» сохранены.")
+
+
+async def cmd_update_contact(message: Message, conn, args: str) -> None:
+    """Обновляет конкретные поля контакта, не трогая остальные.
+
+    Синтаксис: /update_contact ФИО Телефон: +7999...
+    """
+    if not await _require_admin(message):
+        return
+
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    fio, parsed = contact_parser.parse_contact_string(args)
+    if not fio or not parsed:
+        await message.answer(
+            "❌ Формат: /update_contact Иванов Иван Телефон: +7999...\n"
+            "Доступные поля: Почта, Телеграмм, Группа телеграмм, ВК, ВК группа, Телефон, Папки, Ссылка MAX"
+        )
+        return
+
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники. Попробуйте позже.")
+        return
+
+    found = schedule_api.find_teacher(base, fio)
+    if found is None:
+        await message.answer(f"❌ Преподаватель «{fio}» не найден в базе колледжа.")
+        return
+
+    contact = db.get_contact(conn, peer_id, found["id"])
+    if contact is None:
+        await message.answer(
+            f"❌ У преподавателя «{found['name']}» нет сохраненных контактов. Сначала используйте /add_contact."
+        )
+        return
+
+    updated_fields = []
+    for field, value in parsed.items():
+        db.update_contact_field(conn, peer_id, found["id"], field, value)
+        updated_fields.append(field)
+
+    await message.answer(f"✅ Обновлены поля ({', '.join(updated_fields)}) для «{found['name']}».")
+
+
+async def cmd_remove_contact(message: Message, conn, args: str) -> None:
+    """Удаляет контакты преподавателя.
+
+    Синтаксис: /remove_contact ФИО
+    """
+    if not await _require_admin(message):
+        return
+
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    fio = args.strip()
+    if not fio:
+        await message.answer("❌ Формат: /remove_contact Иванов Иван")
+        return
+
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники. Попробуйте позже.")
+        return
+
+    found = schedule_api.find_teacher(base, fio)
+    if found is None:
+        await message.answer(f"❌ Преподаватель «{fio}» не найден в базе колледжа.")
+        return
+
+    if db.remove_contact(conn, peer_id, found["id"]):
+        await message.answer(f"✅ Контакты для «{found['name']}» удалены.")
+    else:
+        await message.answer(f"⚠️ У преподавателя «{found['name']}» не было сохраненных контактов.")
+
+
+async def cmd_contact(message: Message, conn, args: str) -> None:
+    """Показывает контакты преподавателя по фамилии (или части ФИО).
+
+    Синтаксис: /contact Иванов
+    """
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    query = args.strip()
+    if not query:
+        await message.answer("❌ Формат: /contact Иванов")
+        return
+
+    contacts = db.get_contacts_by_name(conn, peer_id, query)
+    if not contacts:
+        await message.answer(f"⚠️ Контакты по запросу «{query}» не найдены.")
+        return
+
+    text = "\n\n".join(format_contact_info(c) for c in contacts)
+    await _reply(message, text)
+
+
+async def cmd_contacts(message: Message, conn) -> None:
+    """Показывает все контакты преподавателей, сохраненные для этой беседы."""
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    contacts = db.get_all_contacts(conn, peer_id)
+    if not contacts:
+        await message.answer("⚠️ В этой беседе пока нет сохраненных контактов преподавателей.")
+        return
+
+    blocks = [format_contact_info(c) for c in contacts]
+    for part in batch_formatted_blocks(blocks):
+        await message.answer(part)
+
+
+# ============================================================
+# Контакты студентов
+# ============================================================
+
+
+async def cmd_add_student_contact(message: Message, conn, args: str) -> None:
+    """Добавляет или перезаписывает контакты студента.
+
+    Синтаксис: /add_student_contact Иванов Иван Телефон: +7999 Почта: a@b.c
+    """
+    if not await _require_admin(message):
+        return
+
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    fio, parsed = contact_parser.parse_contact_string(args)
+    if not fio or not parsed:
+        await message.answer(
+            "❌ Формат: /add_student_contact Иванов Иван Телефон: +7999 Почта: a@b.c\n"
+            "Доступные поля: Почта, Телеграмм, Группа телеграмм, ВК, ВК группа, Телефон, Папки, Ссылка MAX, Адрес"
+        )
+        return
+
+    db.save_student_contact(
+        conn,
+        peer_id=peer_id,
+        student_name=fio,
+        emails=parsed.get("emails", []),
+        telegram=parsed.get("telegram", ""),
+        tg_groups=parsed.get("tg_groups", []),
+        vk=parsed.get("vk", ""),
+        vk_groups=parsed.get("vk_groups", []),
+        phones=parsed.get("phones", []),
+        folders=parsed.get("folders", []),
+        max_link=parsed.get("max_link", ""),
+        address=parsed.get("address", ""),
+    )
+
+    await message.answer(f"✅ Контакты для студента «{fio}» сохранены.")
+
+
+async def cmd_remove_student_contact(message: Message, conn, args: str) -> None:
+    """Удаляет контакты студента.
+
+    Синтаксис: /remove_student_contact Иванов Иван
+    """
+    if not await _require_admin(message):
+        return
+
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    fio = args.strip()
+    if not fio:
+        await message.answer("❌ Формат: /remove_student_contact Иванов Иван")
+        return
+
+    if db.remove_student_contact(conn, peer_id, fio):
+        await message.answer(f"✅ Контакты для студента «{fio}» удалены.")
+    else:
+        await message.answer(f"⚠️ У студента «{fio}» не было сохраненных контактов.")
+
+
+async def cmd_update_student_contact(message: Message, conn, args: str) -> None:
+    """Обновляет конкретные поля контакта студента.
+
+    Синтаксис: /update_student_contact Иванов Иван Телефон: +7999
+    """
+    if not await _require_admin(message):
+        return
+
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    fio, parsed = contact_parser.parse_contact_string(args)
+    if not fio or not parsed:
+        await message.answer(
+            "❌ Формат: /update_student_contact Иванов Иван Телефон: +7999...\n"
+            "Доступные поля: Почта, Телеграмм, Группа телеграмм, ВК, ВК группа, Телефон, Папки, Ссылка MAX, Адрес"
+        )
+        return
+
+    contact = db.get_student_contact(conn, peer_id, fio)
+    if contact is None:
+        await message.answer(
+            f"❌ У студента «{fio}» нет сохраненных контактов. Сначала используйте /add_student_contact."
+        )
+        return
+
+    updated_fields = []
+    for field, value in parsed.items():
+        db.update_student_contact_field(conn, peer_id, fio, field, value)
+        updated_fields.append(field)
+
+    await message.answer(f"✅ Обновлены поля ({', '.join(updated_fields)}) для студента «{fio}».")
+
+
+async def cmd_student_contact(message: Message, conn, args: str) -> None:
+    """Показывает контакты студента по фамилии.
+
+    Синтаксис: /student_contact Иванов
+    """
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    query = args.strip()
+    if not query:
+        await message.answer("❌ Формат: /student_contact Иванов")
+        return
+
+    contacts = db.get_students_by_name(conn, peer_id, query)
+    if not contacts:
+        await message.answer(f"⚠️ Контакты студентов по запросу «{query}» не найдены.")
+        return
+
+    blocks = [format_contact_info(c) for c in contacts]
+    for part in batch_formatted_blocks(blocks):
+        await message.answer(part)
+
+
+async def cmd_students_contacts(message: Message, conn) -> None:
+    """Показывает контакты всех студентов, сохраненные для этой беседы."""
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    contacts = db.get_all_students(conn, peer_id)
+    if not contacts:
+        await message.answer("⚠️ В этой беседе пока нет сохраненных контактов студентов.")
+        return
+
+    blocks = [format_contact_info(c) for c in contacts]
+    for part in batch_formatted_blocks(blocks):
+        await message.answer(part)
