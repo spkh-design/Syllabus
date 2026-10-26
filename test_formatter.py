@@ -390,3 +390,39 @@ def test_day_changes_full_marks_changed_lessons():
     assert "🔔 1." in text
     assert "🔔 2." not in text
     assert "🔔 3." in text
+
+
+# ============================================================
+# batch_formatted_blocks
+# ============================================================
+
+
+def test_batch_formatted_blocks_splits_between_blocks():
+    from formatter import batch_formatted_blocks
+
+    block1 = "А" * 40
+    block2 = "Б" * 40
+    block3 = "В" * 40
+
+    # Лимит 90 символов. Блок 1 + переносы + блок 2 (40+2+40=82) влезут.
+    # А с третьим (82+2+40=124) — нет.
+    parts = batch_formatted_blocks([block1, block2, block3], limit=90)
+
+    assert len(parts) == 2
+    assert block1 in parts[0] and block2 in parts[0]
+    assert block3 in parts[1]
+    # Проверяем, что блоки не разрезаны
+    assert "А" * 40 in parts[0]
+    assert "Б" * 40 in parts[0]
+    assert "В" * 40 in parts[1]
+
+
+def test_batch_formatted_blocks_single_large_block():
+    from formatter import batch_formatted_blocks
+
+    huge_block = "А" * 100
+    parts = batch_formatted_blocks([huge_block], limit=50)
+
+    # Один блок больше лимита — отдается как есть, не режется
+    assert len(parts) == 1
+    assert parts[0] == huge_block
