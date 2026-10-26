@@ -877,3 +877,210 @@ async def test_test_command_teacher(admin_ids, conn, patch_base, patch_send, mon
     assert any("Подписка: Юнева Н.Д." in a for a in m.answers)
     # Проверяем, что _send_day тоже отработал (вызвал send_schedule_message)
     assert len(patch_send) == 1
+
+
+# ============================================================
+# Команды контактов
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_add_contact_success(admin_ids, conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(schedule_api, "find_teacher", lambda b, n: {"id": "uuid-1", "name": "Иванов Иван"})
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_add_contact(m, conn, "Иванов Иван Почта: test@mail.ru Телефон: 123")
+
+    assert "сохранены" in m.answers[-1].lower()
+    c = db.get_contact(conn, CHAT_PEER, "uuid-1")
+    assert c is not None
+    assert c["emails"] == ["test@mail.ru"]
+    assert c["phones"] == ["123"]
+
+
+@pytest.mark.asyncio
+async def test_add_contact_teacher_not_found(admin_ids, conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(schedule_api, "find_teacher", lambda b, n: None)
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_add_contact(m, conn, "Неизвестный Почта: a@b.c")
+
+    assert "не найден в базе" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_add_contact_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=999)
+    await handlers.cmd_add_contact(m, conn, "Иванов Почта: a@b.c")
+    assert "нет прав" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_update_contact_success(admin_ids, conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(schedule_api, "find_teacher", lambda b, n: {"id": "uuid-1", "name": "Иванов Иван"})
+    db.save_contact(conn, CHAT_PEER, "uuid-1", "Иванов Иван", emails=["old@b.c"])
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_update_contact(m, conn, "Иванов Иван Телефон: 999")
+
+    assert "обновлены поля" in m.answers[-1].lower()
+    c = db.get_contact(conn, CHAT_PEER, "uuid-1")
+    assert c["emails"] == ["old@b.c"]  # не стерлось
+    assert c["phones"] == ["999"]  # добавилось
+
+
+@pytest.mark.asyncio
+async def test_update_contact_no_contact(admin_ids, conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(schedule_api, "find_teacher", lambda b, n: {"id": "uuid-1", "name": "Иванов Иван"})
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_update_contact(m, conn, "Иванов Иван Телефон: 999")
+
+    assert "нет сохраненных контактов" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_remove_contact_success(admin_ids, conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(schedule_api, "find_teacher", lambda b, n: {"id": "uuid-1", "name": "Иванов Иван"})
+    db.save_contact(conn, CHAT_PEER, "uuid-1", "Иванов Иван")
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_remove_contact(m, conn, "Иванов Иван")
+
+    assert "удалены" in m.answers[-1].lower()
+    assert db.get_contact(conn, CHAT_PEER, "uuid-1") is None
+
+
+@pytest.mark.asyncio
+async def test_contact_found(conn):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    db.save_contact(conn, CHAT_PEER, "uuid-1", "Иванов Иван", emails=["a@b.c"], phones=["123"])
+
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_contact(m, conn, "Иванов")
+
+    text = m.answers[-1]
+    assert "Иванов Иван" in text
+    assert "a@b.c" in text
+    assert "123" in text
+
+
+@pytest.mark.asyncio
+async def test_contact_not_found(conn):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_contact(m, conn, "Неизвестный")
+    assert "не найдены" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_contacts_list(conn):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    db.save_contact(conn, CHAT_PEER, "uuid-1", "Иванов Иван", telegram="@ivan")
+    db.save_contact(conn, CHAT_PEER, "uuid-2", "Петров Петр", vk="vk.com/petrov")
+
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_contacts(m, conn)
+
+    # Убеждаемся, что выводятся оба (split_message может разбить на части)
+    full_text = "\n".join(m.answers)
+    assert "Иванов Иван" in full_text
+    assert "Петров Петр" in full_text
+    assert "@ivan" in full_text
+    assert "vk.com/petrov" in full_text
+
+
+# ============================================================
+# Команды контактов студентов
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_add_student_contact_success(admin_ids, conn, patch_base):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_add_student_contact(
+        m, conn, "Иванов Иван Телефон: 123 Почта: a@b.c Адрес: г. Сургут, ул. Ленина 1"
+    )
+
+    assert "сохранены" in m.answers[-1].lower()
+    c = db.get_student_contact(conn, CHAT_PEER, "Иванов Иван")
+    assert c is not None
+    assert c["phones"] == ["123"]
+    assert c["address"] == "г. Сургут, ул. Ленина 1"
+
+
+@pytest.mark.asyncio
+async def test_add_student_contact_denied_for_non_admin(admin_ids, conn):
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=999)
+    await handlers.cmd_add_student_contact(m, conn, "Иванов Иван Телефон: 123")
+    assert "нет прав" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_remove_student_contact_success(admin_ids, conn, patch_base):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    db.save_student_contact(conn, CHAT_PEER, "Иванов Иван")
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_remove_student_contact(m, conn, "Иванов Иван")
+
+    assert "удалены" in m.answers[-1].lower()
+    assert db.get_student_contact(conn, CHAT_PEER, "Иванов Иван") is None
+
+
+@pytest.mark.asyncio
+async def test_student_contact_found(conn):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    db.save_student_contact(conn, CHAT_PEER, "Иванов Иван", phones=["123"], address="г. Сургут")
+
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_student_contact(m, conn, "Иванов")
+
+    text = m.answers[-1]
+    assert "Иванов Иван" in text
+    assert "123" in text
+    assert "г. Сургут" in text
+
+
+@pytest.mark.asyncio
+async def test_students_contacts_list(conn):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    db.save_student_contact(conn, CHAT_PEER, "Иванов Иван", telegram="@ivan")
+    db.save_student_contact(conn, CHAT_PEER, "Петров Петр", phones=["999"])
+
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_students_contacts(m, conn)
+
+    full_text = "\n".join(m.answers)
+    assert "Иванов Иван" in full_text
+    assert "Петров Петр" in full_text
+    assert "@ivan" in full_text
+    assert "999" in full_text
+
+
+@pytest.mark.asyncio
+async def test_update_student_contact_success(admin_ids, conn, patch_base):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    db.save_student_contact(conn, CHAT_PEER, "Иванов Иван", emails=["old@b.c"])
+
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_update_student_contact(m, conn, "Иванов Иван Телефон: 999")
+
+    assert "обновлены поля" in m.answers[-1].lower()
+    c = db.get_student_contact(conn, CHAT_PEER, "Иванов Иван")
+    assert c["emails"] == ["old@b.c"]  # не стерлось
+    assert c["phones"] == ["999"]  # добавилось
+
+
+@pytest.mark.asyncio
+async def test_update_student_contact_no_contact(admin_ids, conn, patch_base):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
+    await handlers.cmd_update_student_contact(m, conn, "Иванов Иван Телефон: 999")
+    assert "нет сохраненных контактов" in m.answers[-1].lower()
