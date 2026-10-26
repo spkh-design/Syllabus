@@ -877,3 +877,165 @@ def test_get_entity_empty(conn):
     from database import get_entity
 
     assert get_entity(conn, 999) is None
+
+
+# ============================================================
+# contacts
+# ============================================================
+
+
+def test_save_and_get_contact(conn):
+    from database import save_contact, get_contact
+
+    save_contact(conn, 2000000002, "uuid-1", "Иванов Иван", emails=["a@b.c"], phones=["123"], telegram="@ivan")
+    c = get_contact(conn, 2000000002, "uuid-1")
+    assert c is not None
+    assert c["teacher_name"] == "Иванов Иван"
+    assert c["emails"] == ["a@b.c"]
+    assert c["phones"] == ["123"]
+    assert c["telegram"] == "@ivan"
+    assert c["vk"] == ""  # не задано
+
+
+def test_save_contact_overwrites(conn):
+    from database import save_contact, get_contact
+
+    save_contact(conn, 2000000002, "uuid-1", "Иванов Иван", emails=["old@mail.ru"])
+    save_contact(conn, 2000000002, "uuid-1", "Иванов Иван", emails=["new@mail.ru"])
+
+    c = get_contact(conn, 2000000002, "uuid-1")
+    assert c["emails"] == ["new@mail.ru"]
+
+
+def test_update_contact_field(conn):
+    from database import save_contact, get_contact, update_contact_field
+
+    save_contact(conn, 2000000002, "uuid-1", "Иванов Иван", emails=["a@b.c"])
+
+    # Обновляем телеграм (его не было)
+    assert update_contact_field(conn, 2000000002, "uuid-1", "telegram", "@new_tg") is True
+    # Обновляем почту (перезапись)
+    assert update_contact_field(conn, 2000000002, "uuid-1", "emails", ["new@b.c"]) is True
+
+    c = get_contact(conn, 2000000002, "uuid-1")
+    assert c["telegram"] == "@new_tg"
+    assert c["emails"] == ["new@b.c"]
+
+
+def test_update_contact_missing(conn):
+    from database import update_contact_field
+
+    # Записи нет — вернет False
+    assert update_contact_field(conn, 2000000002, "uuid-x", "telegram", "@x") is False
+
+
+def test_get_contacts_by_name(conn):
+    from database import save_contact, get_contacts_by_name
+
+    save_contact(conn, 2000000002, "uuid-1", "Иванов Иван")
+    save_contact(conn, 2000000002, "uuid-2", "Иванов Петр")
+    save_contact(conn, 2000000002, "uuid-3", "Сидоров Сидор")
+
+    # Поиск по подстроке
+    res = get_contacts_by_name(conn, 2000000002, "Иван")
+    assert len(res) == 2
+    assert {r["teacher_name"] for r in res} == {"Иванов Иван", "Иванов Петр"}
+
+
+def test_get_all_contacts(conn):
+    from database import save_contact, get_all_contacts
+
+    save_contact(conn, 2000000002, "uuid-1", "Иванов Иван")
+    save_contact(conn, 2000000002, "uuid-2", "Сидоров Сидор")
+    save_contact(conn, 2000000003, "uuid-3", "Другой Чат")  # Другой чат!
+
+    res = get_all_contacts(conn, 2000000002)
+    assert len(res) == 2
+    assert {r["teacher_name"] for r in res} == {"Иванов Иван", "Сидоров Сидор"}
+
+
+def test_remove_contact(conn):
+    from database import save_contact, get_contact, remove_contact
+
+    save_contact(conn, 2000000002, "uuid-1", "Иванов Иван")
+    assert remove_contact(conn, 2000000002, "uuid-1") is True
+    assert get_contact(conn, 2000000002, "uuid-1") is None
+    # Повторное удаление
+    assert remove_contact(conn, 2000000002, "uuid-1") is False
+
+
+# ============================================================
+# student_contacts
+# ============================================================
+
+
+def test_save_and_get_student_contact(conn):
+    from database import save_student_contact, get_student_contact
+
+    save_student_contact(
+        conn,
+        2000000002,
+        "Иванов Иван",
+        emails=["a@b.c"],
+        phones=["123"],
+        telegram="@ivan",
+        address="г. Сургут, ул. Ленина 1",
+    )
+    c = get_student_contact(conn, 2000000002, "Иванов Иван")
+    assert c is not None
+    assert c["student_name"] == "Иванов Иван"
+    assert c["emails"] == ["a@b.c"]
+    assert c["address"] == "г. Сургут, ул. Ленина 1"
+
+
+def test_get_students_by_name(conn):
+    from database import save_student_contact, get_students_by_name
+
+    save_student_contact(conn, 2000000002, "Иванов Иван")
+    save_student_contact(conn, 2000000002, "Иванов Петр")
+    save_student_contact(conn, 2000000002, "Сидоров Сидор")
+
+    res = get_students_by_name(conn, 2000000002, "Иван")
+    assert len(res) == 2
+    assert {r["student_name"] for r in res} == {"Иванов Иван", "Иванов Петр"}
+
+
+def test_get_all_students(conn):
+    from database import save_student_contact, get_all_students
+
+    save_student_contact(conn, 2000000002, "Иванов Иван")
+    save_student_contact(conn, 2000000002, "Сидоров Сидор")
+    save_student_contact(conn, 2000000003, "Другой Чат")
+
+    res = get_all_students(conn, 2000000002)
+    assert len(res) == 2
+
+
+def test_remove_student_contact(conn):
+    from database import save_student_contact, get_student_contact, remove_student_contact
+
+    save_student_contact(conn, 2000000002, "Иванов Иван")
+    assert remove_student_contact(conn, 2000000002, "Иванов Иван") is True
+    assert get_student_contact(conn, 2000000002, "Иванов Иван") is None
+    assert remove_student_contact(conn, 2000000002, "Иванов Иван") is False
+
+
+def test_update_student_contact_field(conn):
+    from database import save_student_contact, get_student_contact, update_student_contact_field
+
+    save_student_contact(conn, 2000000002, "Иванов Иван", phones=["123"])
+
+    # Обновляем адрес (его не было)
+    assert update_student_contact_field(conn, 2000000002, "Иванов Иван", "address", "г. Сургут") is True
+    # Обновляем телефон (перезапись)
+    assert update_student_contact_field(conn, 2000000002, "Иванов Иван", "phones", ["999"]) is True
+
+    c = get_student_contact(conn, 2000000002, "Иванов Иван")
+    assert c["address"] == "г. Сургут"
+    assert c["phones"] == ["999"]
+
+
+def test_update_student_contact_missing(conn):
+    from database import update_student_contact_field
+
+    assert update_student_contact_field(conn, 2000000002, "Неизвестный", "phones", ["1"]) is False
