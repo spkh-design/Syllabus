@@ -337,3 +337,11 @@ def get_teacher_week_lessons(base: dict, teacher_uuid: str, start_date: date_typ
             logger.warning("Не удалось получить расписание препода на %s: %s", d, e)
             result[d] = []
     return result
+
+
+def search_teachers(base: dict, query: str) -> list[dict]:
+    """Ищет всех преподавателей, в ФИО которых есть подстрока query."""
+    query_lower = query.strip().lower()
+    if not query_lower:
+        return []
+    return [t for t in base.get("teachers", []) if query_lower in t["name"].lower()]
