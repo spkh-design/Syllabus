@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1084,3 +1084,129 @@ async def test_update_student_contact_no_contact(admin_ids, conn, patch_base):
     m = FakeMessage(peer_id=CHAT_PEER, from_id=123)
     await handlers.cmd_update_student_contact(m, conn, "Иванов Иван Телефон: 999")
     assert "нет сохраненных контактов" in m.answers[-1].lower()
+
+
+# ============================================================
+# /where_is
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_where_is_no_args(conn, patch_base):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "")
+    assert "Формат" in m.answers[-1]
+
+
+@pytest.mark.asyncio
+async def test_where_is_not_found(conn, patch_base):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "Неизвестный")
+    assert "не найден" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_where_is_multiple_found(conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(
+        schedule_api,
+        "search_teachers",
+        lambda b, q: [{"name": "Дубров Н.А.", "id": "t1"}, {"name": "Дубров А.А.", "id": "t2"}],
+    )
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "Дубров")
+    assert "несколько преподавателей" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_where_is_no_divisions(conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(
+        schedule_api, "search_teachers", lambda b, q: [{"name": "Дубров Н.А.", "id": "t1", "divisions": []}]
+    )
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "Дубров")
+    assert "не ведет пары" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_where_is_current_lesson(conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(
+        schedule_api, "search_teachers", lambda b, q: [{"name": "Дубров Н.А.", "id": "t1", "divisions": ["div-1"]}]
+    )
+    # Пара 1 (08:30–09:50), Пара 2 (10:00–11:20) в СП-4
+    monkeypatch.setattr(
+        schedule_api,
+        "get_teacher_lessons",
+        lambda b, u, d: [
+            {"number": 1, "auditoria": "43", "teacher": "Группа 419", "territory": "(СП-4) Энергетическое"},
+            {"number": 2, "auditoria": "45", "teacher": "Группа 301", "territory": "(СП-4) Энергетическое"},
+        ],
+    )
+
+    now = datetime(2026, 10, 27, 9, 0)  # Вт, 09:00 (идет первая пара)
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "Дубров", now=now)
+
+    assert "сейчас на 1 паре" in m.answers[-1].lower()
+    assert "кабинет: 43" in m.answers[-1].lower()
+    assert "в сп-4" in m.answers[-1].lower()
+
+    # Сейчас 09:00 (идет первая пара)
+
+    now = datetime(2026, 10, 26, 9, 0)  # Пн
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "Дубров", now=now)
+
+    assert "сейчас на 1 паре" in m.answers[-1].lower()
+    assert "кабинет: 43" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_where_is_next_lesson(conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(
+        schedule_api, "search_teachers", lambda b, q: [{"name": "Дубров Н.А.", "id": "t1", "divisions": ["div-1"]}]
+    )
+    monkeypatch.setattr(
+        schedule_api,
+        "get_teacher_lessons",
+        lambda b, u, d: [
+            {"number": 1, "auditoria": "43", "teacher": "Группа 419", "territory": "(СП-4) Энергетическое"},
+            {"number": 2, "auditoria": "45", "teacher": "Группа 301", "territory": "(СП-4) Энергетическое"},
+        ],
+    )
+
+    now = datetime(2026, 10, 26, 10, 25)  # Пн, 10:25 (перемена между 1 и 2)
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "Дубров", now=now)
+
+    assert "сейчас отдыхает" in m.answers[-1].lower()
+    assert "следующая пара: 2" in m.answers[-1].lower()
+    assert "в сп-4" in m.answers[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_where_is_tomorrow(conn, patch_base, monkeypatch):
+    db.add_group(conn, CHAT_PEER, "grp-419", "419", "СП-4")
+    monkeypatch.setattr(
+        schedule_api, "search_teachers", lambda b, q: [{"name": "Дубров Н.А.", "id": "t1", "divisions": ["div-1"]}]
+    )
+
+    def fake_lessons(b, u, d):
+        if d.weekday() == 0:
+            return []  # Пн пусто
+        return [{"number": 1, "auditoria": "43", "teacher": "Группа 419", "territory": "(СП-5) МФЦПК"}]  # <--- ТУТ СП-5
+
+    monkeypatch.setattr(schedule_api, "get_teacher_lessons", fake_lessons)
+
+    now = datetime(2026, 10, 26, 12, 0)  # Понедельник 12:00
+    m = FakeMessage(peer_id=CHAT_PEER)
+    await handlers.cmd_where_is(m, conn, "Дубров", now=now)
+
+    assert "ближайшая пара" in m.answers[-1].lower()
+    assert "вт, 27.10" in m.answers[-1].lower()
+    assert "в сп-5" in m.answers[-1].lower()
