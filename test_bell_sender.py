@@ -314,3 +314,42 @@ def test_prepare_image_unknown_falls_back_to_png():
     # Не важно, что данные не сконвертировались — важно,
     # что content_type не падает и функция не кидает
     assert ct in ("image/png", "image/jpeg")
+
+
+@pytest.mark.asyncio
+async def test_send_bell_schedule_with_caption(conn, group, bot_api):
+    """Если у расписания есть кастомный текст, он должен быть в сообщении."""
+    target = date.today() + timedelta(days=1)
+    db.save_bell_schedule(conn, PEER, target, 100, 111, caption="пары по часу, 2 обеда")
+
+    from bell_sender import _send_bell_schedule
+
+    bs = db.get_bell_schedule(conn, PEER, target)
+
+    await _send_bell_schedule(conn, bot_api, PEER, bs)
+
+    bot_api.messages.send.assert_awaited_once()
+    msg = bot_api.messages.send.call_args.kwargs["message"]
+
+    # Проверяем формат
+    assert "🔔 Напоминаем: расписание звонков на" in msg
+    assert "(завтра):" in msg
+    assert "пары по часу, 2 обеда" in msg
+
+
+@pytest.mark.asyncio
+async def test_send_bell_schedule_default_caption(conn, group, bot_api):
+    """Если кастомного текста нет, выводится стандартное сообщение."""
+    target = date.today() + timedelta(days=1)
+    db.save_bell_schedule(conn, PEER, target, 100, 111, caption="расписание звонков")
+
+    from bell_sender import _send_bell_schedule
+
+    bs = db.get_bell_schedule(conn, PEER, target)
+
+    await _send_bell_schedule(conn, bot_api, PEER, bs)
+
+    msg = bot_api.messages.send.call_args.kwargs["message"]
+    assert "🔔 Напоминаем: расписание звонков на" in msg
+    assert "(завтра):\nрасписание звонков" not in msg  # Не должно дублироваться
+    assert msg.endswith("(завтра)")  # Просто заголовок
