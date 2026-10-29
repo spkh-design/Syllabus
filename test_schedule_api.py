@@ -476,3 +476,27 @@ def test_get_teacher_lessons_filters_and_substitutes_group(base_info):
     assert len(lessons) == 1
     assert lessons[0]["number"] == 1
     assert lessons[0]["teacher"] == "Группа 419"  # Подмена поля!
+
+
+# ---------- search_teachers ----------
+
+
+def test_search_teachers_found(base_info):
+    from schedule_api import search_teachers
+
+    base_info["teachers"] = [
+        {"name": "Дубров Никита Александрович", "id": "t1"},
+        {"name": "Дубровская Анна", "id": "t2"},
+        {"name": "Иванов Иван", "id": "t3"},
+    ]
+    res = search_teachers(base_info, "Дубров")
+    assert len(res) == 2
+    assert {t["id"] for t in res} == {"t1", "t2"}
+
+
+def test_search_teachers_empty(base_info):
+    from schedule_api import search_teachers
+
+    base_info["teachers"] = [{"name": "Иванов Иван", "id": "t1"}]
+    assert search_teachers(base_info, "Петров") == []
+    assert search_teachers(base_info, "") == []
