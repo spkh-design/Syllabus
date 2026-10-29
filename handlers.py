@@ -196,7 +196,7 @@ async def cmd_help(message: Message, conn) -> None:
             "  /week_skip — пропустить неделю\n"
             "  /update_contact ФИО ... — обновить контакты препода\n"
             "  /use N — выбрать беседу (в ЛС)\n"
-            "  /metrics — метрики"
+            "  /metrics — метрики\n"
             "  /where_is Фамилия — где сейчас преподаватель"
         )
         kb = get_admin_inline_keyboard()
