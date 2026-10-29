@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, time
 
 from vkbottle.bot import Message
 
@@ -50,6 +50,7 @@ from formatter import (
 from bell_detector import extract_date
 from bell_sender import prepare_image
 from vk_upload import upload_png_to_vk
+from lesson_times import get_lesson_time
 from group_resolver import is_group_chat, is_personal_chat, parse_peer_arg, resolve_peer_id
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,14 @@ async def _reply(message: Message, text: str) -> None:
 def _current_monday(d: date) -> date:
     """Понедельник недели, в которую входит d."""
     return d - timedelta(days=d.weekday())
+
+
+def _get_sp_tag(territory: str) -> str:
+    """Извлекает 'СП-X' из строки '(СП-4) Энергетическое...'. Возвращает ' в СП-4' или ''."""
+    if not territory:
+        return ""
+    match = re.search(r"СП-\d", territory)
+    return f" в {match.group(0)}" if match else ""
 
 
 async def _resolve_entity_or_reply(message: Message, conn, args: str = "") -> tuple[int | None, dict | None, str]:
@@ -188,6 +197,7 @@ async def cmd_help(message: Message, conn) -> None:
             "  /update_contact ФИО ... — обновить контакты препода\n"
             "  /use N — выбрать беседу (в ЛС)\n"
             "  /metrics — метрики"
+            "  /where_is Фамилия — где сейчас преподаватель"
         )
         kb = get_admin_inline_keyboard()
     else:
@@ -201,6 +211,7 @@ async def cmd_help(message: Message, conn) -> None:
             "  /nextweek — на следующую неделю\n"
             "  /bell — расписание звонков\n"
             "  /where — какая беседа отслеживается"
+            "  /where_is Фамилия — где сейчас преподаватель"
             "  /contact Фамилия — контакты преподавателя\n"
             "  /contacts — все контакты преподавателей\n"
             "  /student_contact Фамилия — контакты студента\n"
@@ -1436,3 +1447,130 @@ async def cmd_students_contacts(message: Message, conn) -> None:
     blocks = [format_contact_info(c) for c in contacts]
     for part in batch_formatted_blocks(blocks):
         await message.answer(part)
+
+
+async def cmd_where_is(message: Message, conn, args: str, now: datetime | None = None) -> None:
+    """Показывает, где сейчас находится преподаватель (или когда будет).
+
+    Синтаксис: /where_is Дубров
+    """
+    # 1. Проверяем, что беседа настроена (как /contact)
+    peer_id, entity, _ = await _resolve_entity_or_reply(message, conn)
+    if entity is None:
+        return
+
+    query = args.strip()
+    if not query:
+        await message.answer("❌ Формат: /where_is Фамилия (или Фамилия И.О.)")
+        return
+
+    base = _load_base(conn)
+    if base is None:
+        await message.answer("⚠️ Не удалось получить справочники. Попробуйте позже.")
+        return
+
+    # 2. Ищем преподавателя
+    found_teachers = schedule_api.search_teachers(base, query)
+    if not found_teachers:
+        await message.answer(f"❌ Преподаватель по запросу «{query}» не найден.")
+        return
+
+    if len(found_teachers) > 1:
+        names = "\n".join(f"  • {t['name']}" for t in found_teachers)
+        await message.answer(
+            f"⚠️ Найдено несколько преподавателей:\n{names}\n\nУточните запрос (введите Фамилию И.О.)."
+        )
+        return
+
+    teacher = found_teachers[0]
+
+    # 3. Проверяем, ведет ли он пары
+    if not teacher.get("divisions"):
+        await message.answer(f"❌ Преподаватель «{teacher['name']}» не ведет пары (нет привязки к подразделению).")
+        return
+
+    teacher_uuid = teacher["id"]
+    teacher_name = teacher["name"]
+
+    # 4. Ищем пары на ближайшие 7 дней
+    if now is None:
+        now = datetime.now(schedule_api.SCHEDULE_TZ)
+    today = now.date()
+    now_time = now.time()
+
+    try:
+        for i in range(7):
+            target_date = today + timedelta(days=i)
+
+            # Пропускаем воскресенье
+            if target_date.weekday() == 6:
+                continue
+
+            lessons = schedule_api.get_teacher_lessons(base, teacher_uuid, target_date)
+            if not lessons:
+                continue
+
+            lessons.sort(key=lambda l: l["number"])
+
+            if i == 0:
+                # Сегодня
+                for l in lessons:
+                    time_range = get_lesson_time(target_date.weekday(), l["number"])
+                    if not time_range:
+                        continue
+
+                    start_str, end_str = time_range.split("–")
+                    start_h, start_m = map(int, start_str.split(":"))
+                    end_h, end_m = map(int, end_str.split(":"))
+
+                    from datetime import time as dt_time
+
+                    start_time_val = dt_time(start_h, start_m)
+                    end_time_val = dt_time(end_h, end_m)
+
+                    group_name = l.get("teacher", "?")
+                    sp_tag = _get_sp_tag(l.get("territory", ""))
+
+                    if start_time_val <= now_time <= end_time_val:
+                        # Пара идет прямо сейчас
+                        await message.answer(
+                            f"🏃 {teacher_name} сейчас на {l['number']} паре ({time_range}){sp_tag}.\n"
+                            f"📍 Кабинет: {l['auditoria']}\n"
+                            f"👥 {group_name}"
+                        )
+                        return
+                    elif now_time < start_time_val:
+                        # Пара будет позже сегодня
+                        await message.answer(
+                            f"☕ {teacher_name} сейчас отдыхает.\n"
+                            f"⏭ Следующая пара: {l['number']} ({time_range}){sp_tag}\n"
+                            f"📍 Кабинет: {l['auditoria']}\n"
+                            f"👥 {group_name}"
+                        )
+                        return
+                # Если цикл дошел до конца, значит все пары на сегодня уже прошли — идем на завтра
+            else:
+                # Будущий день (завтра или позже)
+                l = lessons[0]
+                time_range = get_lesson_time(target_date.weekday(), l["number"])
+                weekday_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][target_date.weekday()]
+                date_str = target_date.strftime("%d.%m")
+                group_name = l.get("teacher", "?")
+                sp_tag = _get_sp_tag(l.get("territory", ""))
+
+                await message.answer(
+                    f"📅 Ближайшая пара у {teacher_name}:\n"
+                    f"🗓 {weekday_ru}, {date_str}\n"
+                    f"⏰ {l['number']} пара ({time_range}){sp_tag}\n"
+                    f"📍 Кабинет: {l['auditoria']}\n"
+                    f"👥 {group_name}"
+                )
+                return
+
+    except schedule_api.ScheduleAPIError as e:
+        logger.error("Ошибка API в /where_is: %s", e)
+        await message.answer("⚠️ Не удалось получить расписание из-за ошибки API.")
+        return
+
+    # Если ничего не нашли за 7 дней
+    await message.answer(f"📅 У преподавателя {teacher_name} пока что нет пар в ближайшие 7 дней.")

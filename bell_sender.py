@@ -113,7 +113,13 @@ async def _send_bell_schedule(conn, bot_api, peer_id: int, bs: dict) -> None:
     target_date = date_type.fromisoformat(bs["target_date"])
     target_str = target_date.strftime("%d.%m")
 
-    text = f"🔔 Напоминаем: расписание звонков на {target_str} (завтра)"
+    caption = (bs.get("caption") or "").strip()
+
+    # Формируем текст сообщения
+    if caption and caption != "расписание звонков":
+        text = f"🔔 Напоминаем: расписание звонков на {target_str} (завтра):\n{caption}"
+    else:
+        text = f"🔔 Напоминаем: расписание звонков на {target_str} (завтра)"
 
     image_bytes = bs.get("image_bytes")
     if image_bytes:

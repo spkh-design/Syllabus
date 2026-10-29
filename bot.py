@@ -26,7 +26,7 @@ import database as db
 import scheduler
 from schedule_sender import send_schedule_message
 from config import VK_TOKEN, CHECK_INTERVAL_MINUTES, DB_PATH, ADMIN_PEER_ID, COMMAND_COOLDOWN_SECONDS
-from bell_detector import detect_bell_schedule
+from bell_detector import detect_bell_schedules
 from vk_upload import download_photo, pick_best_photo_size
 from command_guard import guarded, check_cooldown
 from handlers import (
@@ -66,6 +66,7 @@ from handlers import (
     cmd_week,
     cmd_week_skip,
     cmd_where,
+    cmd_where_is,
     cmd_whoami,
 )
 
@@ -194,39 +195,39 @@ async def save_incoming_raw(event: dict) -> None:
                 db.mark_chat_message_ocr_done(conn, peer_id, msg_id)
 
         # --- Детект bell schedule (text + ocr) ---
-        result = detect_bell_schedule(text, ocr_text=ocr_text)
-        if not result.is_bell_schedule or result.target_date is None:
+        results = detect_bell_schedules(text, ocr_text=ocr_text)
+        if not results:
             return
 
         today = _date.today()
-        if result.target_date < today:
-            logger.warning(
-                "Bell schedule определён на %s — это прошлое (сегодня %s), пропускаем. text=%r ocr_preview=%r",
-                result.target_date,
-                today,
-                text[:60],
-                ocr_text[:80],
-            )
-            return
+        for result in results:
+            if result.target_date < today:
+                logger.warning(
+                    "Bell schedule определён на %s — это прошлое (сегодня %s), пропускаем. text=%r",
+                    result.target_date,
+                    today,
+                    text[:60],
+                )
+                continue
 
-        db.save_bell_schedule(
-            conn,
-            peer_id=peer_id,
-            target_date=result.target_date,
-            source_msg_id=msg_id,
-            from_id=from_id,
-            image_bytes=image_bytes,
-            caption=text,
-            ocr_text=ocr_text,
-        )
-        logger.info(
-            "Bell schedule detected: peer=%s target=%s from_msg=%s img=%s ocr_chars=%d",
-            peer_id,
-            result.target_date,
-            msg_id,
-            f"{len(image_bytes)}B" if image_bytes else "none",
-            len(ocr_text),
-        )
+            db.save_bell_schedule(
+                conn,
+                peer_id=peer_id,
+                target_date=result.target_date,
+                source_msg_id=msg_id,
+                from_id=from_id,
+                image_bytes=image_bytes,
+                caption=result.caption,
+                ocr_text=ocr_text,
+            )
+            logger.info(
+                "Bell schedule detected: peer=%s target=%s caption=%r img=%s",
+                peer_id,
+                result.target_date,
+                result.caption,
+                f"{len(image_bytes)}B" if image_bytes else "none",
+            )
+
     except Exception as e:
         logger.exception("Ошибка обработки raw_event: %s", e)
 
@@ -255,6 +256,12 @@ async def on_group(message: Message, args: str):
 @guarded("where", cooldown=COMMAND_COOLDOWN_SECONDS, cancellable=True)
 async def on_where(message: Message):
     await cmd_where(message, conn)
+
+
+@bot.on.message(text=["/where_is", "/where_is <args>"])
+@guarded("where_is", cooldown=COMMAND_COOLDOWN_SECONDS)
+async def on_where_is(message: Message, args: str = ""):
+    await cmd_where_is(message, conn, args)
 
 
 @bot.on.message(text="/today")
