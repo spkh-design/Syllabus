@@ -285,3 +285,61 @@ def test_detect_handles_ocr_bracket_before_date():
     )
     assert r.is_bell_schedule is True
     assert r.target_date == date(2026, 10, 17)
+
+
+# ============================================================
+# Новый функционал: списки и текстовые расписания
+# ============================================================
+
+
+def test_detect_multiple_lines_text():
+    """Текстовое сообщение с несколькими датами и переносами строк."""
+    text = "3.11 - пары по часу, 2 обеда\n" "4.11 - выходной\n" "7.11 - по часу без обеда"
+    from bell_detector import detect_bell_schedules
+
+    results = detect_bell_schedules(text, today=TODAY)
+
+    # Должно быть 2 результата, так как 4.11 - выходной (игнорируется)
+    assert len(results) == 2
+
+    assert results[0].target_date == date(2026, 11, 3)
+    assert "пары по часу" in results[0].caption
+    assert "2 обеда" in results[0].caption
+
+    assert results[1].target_date == date(2026, 11, 7)
+    assert "по часу без обеда" in results[1].caption
+
+
+def test_detect_multiple_commas_text():
+    """Текст без переносов строк, разделенный запятыми."""
+    text = "3.11 - пары по часу, 7.11 - без обеда"
+    from bell_detector import detect_bell_schedules
+
+    results = detect_bell_schedules(text, today=TODAY)
+
+    assert len(results) == 2
+    assert results[0].target_date == date(2026, 11, 3)
+    assert results[1].target_date == date(2026, 11, 7)
+
+
+def test_detect_text_triggers_without_bell_word():
+    """Триггер «пары по часу» без слова «звонок»."""
+    text = "Завтра 5.11 пары по часу"
+    from bell_detector import detect_bell_schedules
+
+    results = detect_bell_schedules(text, today=TODAY)
+
+    assert len(results) == 1
+    assert results[0].target_date == date(2026, 11, 5)
+
+
+def test_detect_text_caption_extracted_correctly():
+    """Из строки должна вырезаться дата."""
+    text = "10.11 - сокращенный день"
+    from bell_detector import detect_bell_schedules
+
+    results = detect_bell_schedules(text, today=TODAY)
+
+    assert len(results) == 1
+    assert results[0].target_date == date(2026, 11, 10)
+    assert results[0].caption == "сокращенный день"
